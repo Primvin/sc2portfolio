@@ -53,6 +53,45 @@ On Linux, use `:` instead of `;` in `--add-data`:
 pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --add-data "sc2reader:sc2reader" sc2replaytool/app.py
 ```
 
+### Windows Installer (PyInstaller + Inno Setup)
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
+pip install pyinstaller
+```
+2. Build the exe:
+```bash
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer sc2replaytool/app.py
+```
+3. Install Inno Setup (then use the Inno Setup Compiler GUI or CLI).
+4. Create an installer script `installer.iss`:
+```ini
+[Setup]
+AppName=SC2ReplayAnalyzer
+AppVersion=0.1.0
+DefaultDirName={pf}\SC2ReplayAnalyzer
+DefaultGroupName=SC2ReplayAnalyzer
+OutputDir=dist
+OutputBaseFilename=SC2ReplayAnalyzer-Setup
+Compression=lzma
+SolidCompression=yes
+
+[Files]
+Source: "dist\\SC2ReplayAnalyzer.exe"; DestDir: "{app}"; Flags: ignoreversion
+
+[Icons]
+Name: "{group}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"
+Name: "{commondesktop}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"; Tasks: desktopicon
+
+[Tasks]
+Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked
+```
+5. Compile `installer.iss` to generate the installer in `dist/`.
+
+### Data Folder Location
+On Windows, app data is stored in:
+`%APPDATA%\\SC2ReplayAnalyzer\\data\\`
+
 ### Notes
 - Place your replays in a single folder (the app can scan subfolders).
 - Build order tagging is manual for now; we can add detection later.
