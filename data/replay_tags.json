@@ -1,0 +1,30 @@
+{
+  "favorites": [],
+  "build_orders": {},
+  "categories": {
+    "/home/primvin/Documents/dev/sc2portfolio/example/Whispers of Gold (95).SC2Replay": "test"
+  },
+  "tags": {
+    "/home/primvin/Documents/dev/sc2portfolio/example/Ley Lines (57).SC2Replay": [
+      "test"
+    ],
+    "/home/primvin/Documents/dev/sc2portfolio/example/Tourmaline LE (23).SC2Replay": [
+      "aez"
+    ],
+    "/home/primvin/Documents/dev/sc2portfolio/example/Tourmaline LE (5).SC2Replay": [
+      "aze",
+      "test"
+    ],
+    "/home/primvin/Documents/dev/sc2portfolio/example/Tourmaline LE (18).SC2Replay": [
+      "aze",
+      "ter"
+    ],
+    "/home/primvin/Documents/dev/sc2portfolio/example/Abyssal Reef LE (44).SC2Replay": [
+      "azer",
+      "ter"
+    ],
+    "/home/primvin/Documents/dev/sc2portfolio/example/Ultralove (105).SC2Replay": [
+      "aze"
+    ]
+  }
+}
