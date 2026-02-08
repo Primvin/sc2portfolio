@@ -91,6 +91,7 @@ class App:
         self.edit_tag_select = tk.StringVar(value="")
         self.status = tk.StringVar(value="Ready")
         self.progress_var = tk.DoubleVar(value=0.0)
+        self.scan_hint = tk.StringVar(value="")
 
         self.scan_queue: Queue[Any] = Queue()
         self._scan_log_path = get_data_dir() / "scan_debug.log"
@@ -110,7 +111,17 @@ class App:
         ttk.Entry(folder_row, textvariable=self.replay_folder, width=70).pack(side=tk.LEFT, padx=6)
         ttk.Button(folder_row, text="Browse", command=self._browse_folder).pack(side=tk.LEFT)
         ttk.Button(folder_row, text="Scan", command=self._start_scan).pack(side=tk.LEFT, padx=6)
-        ttk.Button(folder_row, text="Reload", command=self._reload_index).pack(side=tk.LEFT)
+        ttk.Label(folder_row, textvariable=self.scan_hint).pack(side=tk.LEFT, padx=6)
+        tk.Button(
+            folder_row,
+            text="Supprimer l'historique",
+            command=self._clear_history,
+            bg="#c0392b",
+            fg="white",
+            activebackground="#a93226",
+            activeforeground="white",
+            relief=tk.FLAT,
+        ).pack(side=tk.RIGHT)
 
         filter_row = ttk.Frame(frame)
         filter_row.pack(fill=tk.X, pady=8)
@@ -292,11 +303,13 @@ class App:
             return
         self._log_scan(f"Folder: {folder}")
         self.status.set("Scanning...")
+        self.scan_hint.set("Scanning...")
         self.progress_var.set(0.0)
         self.progress["value"] = 0
         threshold = self._get_proxy_threshold()
         if threshold is None:
             self._log_scan("Invalid proxy threshold")
+            self.scan_hint.set("")
             return
         self._log_scan(f"Proxy threshold: {threshold}")
         thread = threading.Thread(target=self._scan_worker, args=(Path(folder), threshold), daemon=True)
@@ -337,6 +350,7 @@ class App:
             self.tags = load_tags()
             self.progress_var.set(100.0)
             self.status.set("Scan complete")
+            self.scan_hint.set("")
             self._refresh_filters()
             self._refresh_list()
             self._log_scan("Scan complete")
@@ -345,6 +359,7 @@ class App:
             _tag, message = item
             self.status.set("Scan failed")
             self._log_scan(f"Scan failed: {message}")
+            self.scan_hint.set("")
             messagebox.showerror("Scan failed", message)
             return
 
@@ -841,6 +856,26 @@ class App:
                         "proxy_flag": bool(item.get("proxy_flag")),
                     }
                 )
+
+    def _clear_history(self) -> None:
+        confirm = messagebox.askyesno(
+            "Supprimer l'historique",
+            "Supprimer tout l'historique de scan et les tags ?",
+        )
+        if not confirm:
+            return
+        for filename in ("replay_index.json", "replay_tags.json"):
+            path = get_data_dir() / filename
+            try:
+                if path.exists():
+                    path.unlink()
+            except Exception:
+                pass
+        self.index = {"replays": []}
+        self.tags = {"favorites": [], "tags": {}, "build_orders": {}}
+        self._refresh_filters()
+        self._refresh_list()
+        self.status.set("History cleared")
 
     def _log_scan(self, message: str) -> None:
         try:
