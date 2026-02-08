@@ -40,17 +40,17 @@ The app creates a `data/` folder in the current working directory:
 From the repo root:
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico run_app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader run_app.py
 ```
 The executable will be in `dist/SC2ReplayAnalyzer.exe`.
 
 If you want the local `sc2reader` included, add:
 ```bash
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --add-data "sc2reader;sc2reader" run_app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader --add-data "sc2reader;sc2reader" run_app.py
 ```
 On Linux, use `:` instead of `;` in `--add-data`:
 ```bash
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --add-data "sc2reader:sc2reader" run_app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader --add-data "sc2reader:sc2reader" run_app.py
 ```
 
 ### Windows Installer (PyInstaller + Inno Setup)
@@ -61,7 +61,7 @@ pip install pyinstaller
 ```
 2. Build the exe:
 ```bash
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico sc2replaytool/app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader sc2replaytool/app.py
 ```
 3. Install Inno Setup (then use the Inno Setup Compiler GUI or CLI).
 4. Create an installer script `installer.iss`:
