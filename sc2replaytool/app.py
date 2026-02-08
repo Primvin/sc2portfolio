@@ -93,6 +93,7 @@ class App:
         self.progress_var = tk.DoubleVar(value=0.0)
 
         self.scan_queue: Queue[Any] = Queue()
+        self._scan_log_path = get_data_dir() / "scan_debug.log"
 
         self._build_ui()
         self._refresh_filters()
@@ -283,16 +284,21 @@ class App:
             save_settings(self.settings)
 
     def _start_scan(self) -> None:
+        self._log_scan("Scan button clicked")
         folder = self.replay_folder.get().strip()
         if not folder:
             messagebox.showwarning("Missing Folder", "Please select a replay folder first.")
+            self._log_scan("Missing folder")
             return
+        self._log_scan(f"Folder: {folder}")
         self.status.set("Scanning...")
         self.progress_var.set(0.0)
         self.progress["value"] = 0
         threshold = self._get_proxy_threshold()
         if threshold is None:
+            self._log_scan("Invalid proxy threshold")
             return
+        self._log_scan(f"Proxy threshold: {threshold}")
         thread = threading.Thread(target=self._scan_worker, args=(Path(folder), threshold), daemon=True)
         thread.start()
         self.root.after(100, self._poll_scan)
@@ -307,8 +313,11 @@ class App:
         def progress_cb(current: int, total: int) -> None:
             self.scan_queue.put(("progress", current, total))
 
-        index = scan_replays(folder, proxy_threshold=threshold, progress_cb=progress_cb)
-        self.scan_queue.put(("done", index))
+        try:
+            index = scan_replays(folder, proxy_threshold=threshold, progress_cb=progress_cb)
+            self.scan_queue.put(("done", index))
+        except Exception as exc:  # noqa: BLE001
+            self.scan_queue.put(("error", str(exc)))
 
     def _poll_scan(self) -> None:
         if self.scan_queue.empty():
@@ -330,6 +339,14 @@ class App:
             self.status.set("Scan complete")
             self._refresh_filters()
             self._refresh_list()
+            self._log_scan("Scan complete")
+            return
+        if isinstance(item, tuple) and item[0] == "error":
+            _tag, message = item
+            self.status.set("Scan failed")
+            self._log_scan(f"Scan failed: {message}")
+            messagebox.showerror("Scan failed", message)
+            return
 
     def _refresh_filters(self) -> None:
         matchups = sorted({item.get("matchup", "Unknown") for item in self.index.get("replays", [])})
@@ -824,6 +841,15 @@ class App:
                         "proxy_flag": bool(item.get("proxy_flag")),
                     }
                 )
+
+    def _log_scan(self, message: str) -> None:
+        try:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self._scan_log_path.parent.mkdir(parents=True, exist_ok=True)
+            with self._scan_log_path.open("a", encoding="utf-8") as f:
+                f.write(f"[{timestamp}] {message}\n")
+        except Exception:
+            pass
 
 
 def main() -> None:
