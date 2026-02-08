@@ -11,7 +11,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 Write-Host "[3/4] Building exe..."
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer sc2replaytool\app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer run_app.py
 
 Write-Host "[4/4] Preparing Inno Setup script..."
 $iss = @'

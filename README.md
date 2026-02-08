@@ -40,17 +40,17 @@ The app creates a `data/` folder in the current working directory:
 From the repo root:
 ```bash
 pip install pyinstaller
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer sc2replaytool/app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer run_app.py
 ```
 The executable will be in `dist/SC2ReplayAnalyzer.exe`.
 
 If you want the local `sc2reader` included, add:
 ```bash
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --add-data "sc2reader;sc2reader" sc2replaytool/app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --add-data "sc2reader;sc2reader" run_app.py
 ```
 On Linux, use `:` instead of `;` in `--add-data`:
 ```bash
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --add-data "sc2reader:sc2reader" sc2replaytool/app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --add-data "sc2reader:sc2reader" run_app.py
 ```
 
 ### Windows Installer (PyInstaller + Inno Setup)

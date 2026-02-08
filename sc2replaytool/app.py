@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+if __package__ is None or __package__ == "":
+    import sys
+    from pathlib import Path
+
+    sys.path.append(str(Path(__file__).resolve().parents[1]))
+
 import json
 import csv
 import threading
