@@ -11,7 +11,7 @@ pip install -r requirements.txt
 pip install pyinstaller
 
 Write-Host "[3/4] Building exe..."
-pyinstaller --onefile --windowed -n SC2ReplayAnalyzer run_app.py
+pyinstaller --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico run_app.py
 
 Write-Host "[4/4] Preparing Inno Setup script..."
 $iss = @'
@@ -24,13 +24,14 @@ OutputDir=dist
 OutputBaseFilename=SC2ReplayAnalyzer-Setup
 Compression=lzma
 SolidCompression=yes
+SetupIconFile=sc2replaytool\\ico\\SC2RA_multi_sizes.ico
 
 [Files]
 Source: "dist\\SC2ReplayAnalyzer.exe"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"
-Name: "{commondesktop}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"; Tasks: desktopicon
+Name: "{group}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"; IconFilename: "{app}\\SC2ReplayAnalyzer.exe"
+Name: "{commondesktop}\\SC2ReplayAnalyzer"; Filename: "{app}\\SC2ReplayAnalyzer.exe"; IconFilename: "{app}\\SC2ReplayAnalyzer.exe"; Tasks: desktopicon
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a &desktop icon"; GroupDescription: "Additional icons:"; Flags: unchecked
