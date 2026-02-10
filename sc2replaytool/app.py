@@ -539,6 +539,18 @@ class App:
                     folder = ""
         return folder
 
+    def _normalize_path(self, value: str) -> str:
+        try:
+            return os.path.normcase(os.path.normpath(value))
+        except Exception:
+            return value
+
+    def _folder_matches(self, item: Dict[str, Any], folder_filter: str) -> bool:
+        if folder_filter == "All":
+            return True
+        item_folder = self._item_source_folder(item)
+        return self._normalize_path(item_folder) == self._normalize_path(folder_filter)
+
     def _refresh_list(self) -> None:
         self.tree.delete(*self.tree.get_children())
 
@@ -556,7 +568,7 @@ class App:
         selected_steps = self._normalized_bo_steps()
 
         for item in self.index.get("replays", []):
-            if folder_filter != "All" and self._item_source_folder(item) != folder_filter:
+            if not self._folder_matches(item, folder_filter):
                 continue
             if matchup_filter != "All" and item.get("matchup") != matchup_filter:
                 continue
@@ -760,7 +772,7 @@ class App:
         tags_map = self.tags.get("tags", {})
 
         for item in self.index.get("replays", []):
-            if folder_filter != "All" and self._item_source_folder(item) != folder_filter:
+            if not self._folder_matches(item, folder_filter):
                 continue
             if matchup_filter != "All" and item.get("matchup") != matchup_filter:
                 continue
