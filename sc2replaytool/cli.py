@@ -30,6 +30,18 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _format_winner(players: list[dict[str, object]]) -> str:
+    winners = []
+    for p in players:
+        result = str(p.get("result", "")).lower()
+        if result in {"win", "winner", "victory"}:
+            winners.append(str(p.get("name", "")))
+    winners = [w for w in winners if w]
+    if not winners:
+        return "Unknown"
+    return " | ".join(winners)
+
+
 def main() -> None:
     args = parse_args()
 
@@ -84,13 +96,15 @@ def main() -> None:
             players = "; ".join(p.get("name", "") for p in item.get("players", []))
             tag_list = tags.get("tags", {}).get(item.get("path", ""), [])
             tags_str = ", ".join(tag_list)
-            line = f"{item.get('filename')} | {players} | {item.get('matchup')} | {item.get('map')} | {tags_str} | {bo_display}"
+            winner = _format_winner(item.get("players", []))
+            line = f"{item.get('filename')} | {players} | {winner} | {item.get('matchup')} | {item.get('map')} | {tags_str} | {bo_display}"
             print(line)
             rows.append(
                 {
                     "filename": item.get("filename", ""),
                     "path": item.get("path", ""),
                     "map": item.get("map", ""),
+                    "winner": _format_winner(item.get("players", [])),
                     "matchup": item.get("matchup", ""),
                     "date": item.get("start_time", ""),
                     "length": item.get("length", ""),
@@ -115,6 +129,7 @@ def main() -> None:
                         "filename",
                         "path",
                         "map",
+                        "winner",
                         "matchup",
                         "date",
                         "length",

@@ -20,7 +20,7 @@ from typing import Dict, Any, List
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from .core.indexer import scan_replays, load_index
+from .core.indexer import scan_replays, scan_replays_multi, load_index
 from .core.tags import load_tags, save_tags, set_favorite, set_build_order, set_tags
 from .core.paths import get_data_dir
 
@@ -62,17 +62,64 @@ def format_length(value: str) -> str:
     return value.replace("0:0", "0:") if value else ""
 
 
+def parse_length_seconds(value: str) -> int:
+    if not value:
+        return 0
+    raw = value.strip()
+    if ":" in raw:
+        parts = raw.split(":")
+        try:
+            nums = [int(p) for p in parts]
+        except ValueError:
+            return 0
+        if len(nums) == 3:
+            return nums[0] * 3600 + nums[1] * 60 + nums[2]
+        if len(nums) == 2:
+            return nums[0] * 60 + nums[1]
+        return 0
+    if "." in raw:
+        left, right = raw.split(".", 1)
+        try:
+            minutes = int(left)
+            seconds = int(right)
+        except ValueError:
+            return 0
+        return minutes * 60 + seconds
+    try:
+        minutes = float(raw)
+    except ValueError:
+        return 0
+    return int(minutes * 60)
+
+
+def format_total_seconds(seconds: int) -> str:
+    if seconds <= 0:
+        return "0:00:00"
+    hours = seconds // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    return f"{hours}:{minutes:02d}:{secs:02d}"
+
+
 class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SC2 Replay Analyzer")
-        self.root.geometry("1100x700")
+        self.root.geometry("1200x820")
+        self.root.minsize(1100, 700)
 
         self.index: Dict[str, Any] = load_index()
         self.tags: Dict[str, Any] = load_tags()
         self.settings: Dict[str, Any] = load_settings()
 
-        self.replay_folder = tk.StringVar(value=self.settings.get("replay_folder", ""))
+        replay_folders = list(self.settings.get("replay_folders", []))
+        legacy_folder = self.settings.get("replay_folder", "")
+        if legacy_folder and legacy_folder not in replay_folders:
+            replay_folders.append(legacy_folder)
+        self.replay_folders = replay_folders
+        default_folder = legacy_folder if legacy_folder in replay_folders else (replay_folders[0] if replay_folders else "")
+        self.replay_folder = tk.StringVar(value=default_folder)
+        self.folder_filter = tk.StringVar(value="All")
         self.matchup_filter = tk.StringVar(value="All")
         self.build_order_mode = tk.StringVar(value="Tech")
         self.tag_filter = tk.StringVar(value="All")
@@ -97,6 +144,9 @@ class App:
         self._scan_log_path = get_data_dir() / "scan_debug.log"
 
         self._build_ui()
+        self._sync_folder_controls()
+        self._sort_state["date"] = True
+        self.last_sort_column = "date"
         self._refresh_filters()
         self._refresh_list()
 
@@ -107,10 +157,13 @@ class App:
         folder_row = ttk.Frame(frame)
         folder_row.pack(fill=tk.X)
 
-        ttk.Label(folder_row, text="Replay Folder:").pack(side=tk.LEFT)
-        ttk.Entry(folder_row, textvariable=self.replay_folder, width=70).pack(side=tk.LEFT, padx=6)
-        ttk.Button(folder_row, text="Browse", command=self._browse_folder).pack(side=tk.LEFT)
-        ttk.Button(folder_row, text="Scan", command=self._start_scan).pack(side=tk.LEFT, padx=6)
+        ttk.Label(folder_row, text="Replay Folders:").pack(side=tk.LEFT)
+        self.replay_folder_combo = ttk.Combobox(folder_row, textvariable=self.replay_folder, state="readonly", width=70)
+        self.replay_folder_combo.pack(side=tk.LEFT, padx=6)
+        ttk.Button(folder_row, text="Add Folder", command=self._browse_folder).pack(side=tk.LEFT)
+        ttk.Button(folder_row, text="Remove", command=self._remove_folder).pack(side=tk.LEFT, padx=6)
+        ttk.Button(folder_row, text="Scan Selected", command=self._start_scan).pack(side=tk.LEFT)
+        ttk.Button(folder_row, text="Scan All", command=self._start_scan_all).pack(side=tk.LEFT, padx=6)
         ttk.Label(folder_row, textvariable=self.scan_hint).pack(side=tk.LEFT, padx=6)
         tk.Button(
             folder_row,
@@ -130,6 +183,13 @@ class App:
         self.matchup_combo = ttk.Combobox(filter_row, textvariable=self.matchup_filter, state="readonly", width=12)
         self.matchup_combo.pack(side=tk.LEFT, padx=6)
         self.matchup_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
+
+        ttk.Label(filter_row, text="Folder:").pack(side=tk.LEFT, padx=6)
+        self.folder_combo = ttk.Combobox(filter_row, textvariable=self.folder_filter, state="readonly", width=28)
+        self.folder_combo.pack(side=tk.LEFT, padx=6)
+        self.folder_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
+        self.folder_combo.bind("<<ComboboxSelected>>", lambda _e: self._scroll_combo_to_end(self.folder_combo))
+        self.folder_combo.bind("<FocusIn>", lambda _e: self._scroll_combo_to_end(self.folder_combo))
 
         ttk.Label(filter_row, text="Race:").pack(side=tk.LEFT)
         self.race_combo = ttk.Combobox(filter_row, textvariable=self.race_filter, state="readonly", width=6)
@@ -197,6 +257,9 @@ class App:
         ttk.Entry(action_row, textvariable=self.build_order_entry, width=30).pack(side=tk.LEFT, padx=6)
         ttk.Button(action_row, text="Set", command=self._set_selected_build_order).pack(side=tk.LEFT)
         ttk.Button(action_row, text="Export CSV", command=self._export_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="Export Full CSV", command=self._export_full_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="Import CSV", command=self._import_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="Stats", command=self._open_stats_window).pack(side=tk.LEFT, padx=6)
 
         ttk.Label(action_row, text="Proxy Threshold:").pack(side=tk.LEFT, padx=6)
         ttk.Entry(action_row, textvariable=self.proxy_threshold, width=6).pack(side=tk.LEFT)
@@ -214,7 +277,7 @@ class App:
         self.tag_search_combo.bind("<KeyRelease>", lambda _e: self._on_tag_search_change())
         self.tag_search_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
 
-        columns = ("fav", "filename", "players", "matchup", "map", "date", "length", "tags", "build_order", "proxy_dist")
+        columns = ("fav", "filename", "players", "winner", "matchup", "map", "date", "length", "tags", "build_order", "proxy_dist")
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=6)
         self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=18)
@@ -222,6 +285,7 @@ class App:
         self.tree.heading("fav", text="Fav", command=lambda: self._sort_by("fav"))
         self.tree.heading("filename", text="Filename", command=lambda: self._sort_by("filename"))
         self.tree.heading("players", text="Players", command=lambda: self._sort_by("players"))
+        self.tree.heading("winner", text="Winner", command=lambda: self._sort_by("winner"))
         self.tree.heading("matchup", text="Matchup", command=lambda: self._sort_by("matchup"))
         self.tree.heading("map", text="Map", command=lambda: self._sort_by("map"))
         self.tree.heading("date", text="Date", command=lambda: self._sort_by("date"))
@@ -233,6 +297,7 @@ class App:
         self.tree.column("fav", width=40, minwidth=40, anchor=tk.CENTER, stretch=False)
         self.tree.column("filename", width=220, minwidth=120, stretch=False)
         self.tree.column("players", width=220, minwidth=120, stretch=False)
+        self.tree.column("winner", width=160, minwidth=120, stretch=False)
         self.tree.column("matchup", width=80, minwidth=60, anchor=tk.CENTER, stretch=False)
         self.tree.column("map", width=180, minwidth=120, stretch=False)
         self.tree.column("date", width=140, minwidth=100, stretch=False)
@@ -290,9 +355,30 @@ class App:
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select Replay Folder")
         if folder:
+            if folder not in self.replay_folders:
+                self.replay_folders.append(folder)
             self.replay_folder.set(folder)
+            self.settings["replay_folders"] = list(self.replay_folders)
             self.settings["replay_folder"] = folder
             save_settings(self.settings)
+            self._sync_folder_controls()
+
+    def _remove_folder(self) -> None:
+        folder = self.replay_folder.get().strip()
+        if not folder:
+            return
+        if folder in self.replay_folders:
+            self.replay_folders = [f for f in self.replay_folders if f != folder]
+            self.settings["replay_folders"] = list(self.replay_folders)
+            if self.replay_folders:
+                self.replay_folder.set(self.replay_folders[0])
+                self.settings["replay_folder"] = self.replay_folders[0]
+            else:
+                self.replay_folder.set("")
+                self.settings["replay_folder"] = ""
+            save_settings(self.settings)
+            self._sync_folder_controls()
+            self._refresh_list()
 
     def _start_scan(self) -> None:
         self._log_scan("Scan button clicked")
@@ -312,7 +398,31 @@ class App:
             self.scan_hint.set("")
             return
         self._log_scan(f"Proxy threshold: {threshold}")
-        thread = threading.Thread(target=self._scan_worker, args=(Path(folder), threshold), daemon=True)
+        thread = threading.Thread(target=self._scan_worker, args=([Path(folder)], threshold), daemon=True)
+        thread.start()
+        self.root.after(100, self._poll_scan)
+
+    def _start_scan_all(self) -> None:
+        self._log_scan("Scan all button clicked")
+        if not self.replay_folders:
+            messagebox.showwarning("Missing Folder", "Please add at least one replay folder first.")
+            self._log_scan("Missing folders")
+            return
+        self.status.set("Scanning...")
+        self.scan_hint.set("Scanning all...")
+        self.progress_var.set(0.0)
+        self.progress["value"] = 0
+        threshold = self._get_proxy_threshold()
+        if threshold is None:
+            self._log_scan("Invalid proxy threshold")
+            self.scan_hint.set("")
+            return
+        self._log_scan(f"Proxy threshold: {threshold}")
+        thread = threading.Thread(
+            target=self._scan_worker,
+            args=([Path(folder) for folder in self.replay_folders], threshold),
+            daemon=True,
+        )
         thread.start()
         self.root.after(100, self._poll_scan)
 
@@ -322,12 +432,15 @@ class App:
         self._refresh_filters()
         self._refresh_list()
 
-    def _scan_worker(self, folder: Path, threshold: float) -> None:
+    def _scan_worker(self, folders: List[Path], threshold: float) -> None:
         def progress_cb(current: int, total: int) -> None:
             self.scan_queue.put(("progress", current, total))
 
         try:
-            index = scan_replays(folder, proxy_threshold=threshold, progress_cb=progress_cb)
+            if len(folders) == 1:
+                index = scan_replays(folders[0], proxy_threshold=threshold, progress_cb=progress_cb)
+            else:
+                index = scan_replays_multi(folders, proxy_threshold=threshold, progress_cb=progress_cb)
             self.scan_queue.put(("done", index))
         except Exception as exc:  # noqa: BLE001
             self.scan_queue.put(("error", str(exc)))
@@ -364,6 +477,7 @@ class App:
             return
 
     def _refresh_filters(self) -> None:
+        self._sync_folder_controls()
         matchups = sorted({item.get("matchup", "Unknown") for item in self.index.get("replays", [])})
         matchups = ["All"] + matchups
         self.matchup_combo["values"] = matchups
@@ -389,10 +503,45 @@ class App:
         self._refresh_build_order_options()
         self._refresh_list()
 
+    def _sync_folder_controls(self) -> None:
+        values = list(self.replay_folders)
+        if hasattr(self, "replay_folder_combo"):
+            self.replay_folder_combo["values"] = values
+        if self.replay_folder.get() not in values:
+            self.replay_folder.set(values[0] if values else "")
+        folder_values = ["All"] + values
+        if hasattr(self, "folder_combo"):
+            self.folder_combo["values"] = folder_values
+        if self.folder_filter.get() not in folder_values:
+            self.folder_filter.set("All")
+        if hasattr(self, "folder_combo"):
+            self._scroll_combo_to_end(self.folder_combo)
+
+    def _scroll_combo_to_end(self, combo: ttk.Combobox) -> None:
+        try:
+            combo.xview_moveto(1.0)
+        except Exception:
+            pass
+
+    def _item_source_folder(self, item: Dict[str, Any]) -> str:
+        folder = item.get("source_folder", "") or ""
+        if not folder:
+            index_folder = str(self.index.get("folder", ""))
+            path = str(item.get("path", ""))
+            if index_folder and path.startswith(index_folder):
+                folder = index_folder
+            else:
+                try:
+                    folder = str(Path(path).parent)
+                except Exception:
+                    folder = ""
+        return folder
+
     def _refresh_list(self) -> None:
         self.tree.delete(*self.tree.get_children())
 
         matchup_filter = self.matchup_filter.get()
+        folder_filter = self.folder_filter.get()
         favorites = set(self.tags.get("favorites", []))
         build_orders = self.tags.get("build_orders", {})
         tags_map = self.tags.get("tags", {})
@@ -405,6 +554,8 @@ class App:
         selected_steps = self._normalized_bo_steps()
 
         for item in self.index.get("replays", []):
+            if folder_filter != "All" and self._item_source_folder(item) != folder_filter:
+                continue
             if matchup_filter != "All" and item.get("matchup") != matchup_filter:
                 continue
             if self.favorite_only.get() and item.get("path") not in favorites:
@@ -446,6 +597,7 @@ class App:
                     "Y" if item.get("path") in favorites else "",
                     item.get("filename"),
                     self._format_players(item.get("players", [])),
+                    self._format_winner(item.get("players", [])),
                     item.get("matchup"),
                     item.get("map"),
                     format_date(item.get("start_time", "")),
@@ -494,6 +646,7 @@ class App:
             return
 
         players = self._format_players(item.get("players", []))
+        winner = self._format_winner(item.get("players", []))
         manual_bo = self.tags.get("build_orders", {}).get(path, "")
         auto_bo = item.get("build_order_auto", "")
         proxy_by_player = self._format_proxy_by_player(item)
@@ -505,6 +658,7 @@ class App:
             f"Date: {format_date(item.get('start_time', ''))}",
             f"Length: {format_length(item.get('length', ''))}",
             f"Players: {players}",
+            f"Winner: {winner}",
             f"Player Count: {len(item.get('players', []))}",
             f"Tags: {', '.join(self.tags.get('tags', {}).get(path, []))}",
             f"Build Order (manual): {manual_bo}",
@@ -597,12 +751,15 @@ class App:
     def _refresh_build_order_options(self) -> None:
         candidates = []
         matchup_filter = self.matchup_filter.get()
+        folder_filter = self.folder_filter.get()
         favorites = set(self.tags.get("favorites", []))
         player_query = self.player_filter.get().strip().lower()
         map_query = self.map_filter.get().strip().lower()
         tags_map = self.tags.get("tags", {})
 
         for item in self.index.get("replays", []):
+            if folder_filter != "All" and self._item_source_folder(item) != folder_filter:
+                continue
             if matchup_filter != "All" and item.get("matchup") != matchup_filter:
                 continue
             if self.favorite_only.get() and item.get("path") not in favorites:
@@ -682,6 +839,176 @@ class App:
                 parts.append(name)
         return " | ".join(parts)
 
+    def _format_winner(self, players: List[Dict[str, Any]]) -> str:
+        winners = []
+        for p in players:
+            result = str(p.get("result", "")).lower()
+            if result in {"win", "winner", "victory"}:
+                winners.append(p.get("name", ""))
+        winners = [w for w in winners if w]
+        if not winners:
+            return "Unknown"
+        return " | ".join(winners)
+
+    def _open_stats_window(self) -> None:
+        if not hasattr(self, "filtered_items"):
+            self._refresh_list()
+        if not self.filtered_items:
+            messagebox.showinfo("No Data", "No replays in current filters.")
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Stats")
+        window.geometry("760x520")
+        window.minsize(720, 480)
+
+        top = ttk.Frame(window, padding=10)
+        top.pack(fill=tk.X)
+
+        ttk.Label(top, text="Player:").pack(side=tk.LEFT)
+        player_var = tk.StringVar(value="")
+        player_combo = ttk.Combobox(top, textvariable=player_var, state="readonly", width=30)
+        player_combo.pack(side=tk.LEFT, padx=6)
+
+        stats_text = tk.Text(window, height=20, wrap=tk.NONE)
+        stats_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
+        stats_text.configure(state=tk.DISABLED)
+
+        players = sorted({p.get("name", "") for item in self.filtered_items for p in item.get("players", []) if p.get("name")})
+        if not players:
+            players = [""]
+        player_combo["values"] = players
+        player_var.set(players[0])
+
+        def set_text(text: str) -> None:
+            stats_text.configure(state=tk.NORMAL)
+            stats_text.delete("1.0", tk.END)
+            stats_text.insert(tk.END, text)
+            stats_text.configure(state=tk.DISABLED)
+
+        def is_win(p: Dict[str, Any]) -> bool:
+            return str(p.get("result", "")).lower() in {"win", "winner", "victory"}
+
+        def is_proxy_against(item: Dict[str, Any], player_pid: int | None, player_team: Any) -> bool:
+            if player_pid is None:
+                return False
+            distances = item.get("proxy_distances", {}) or {}
+            threshold = item.get("proxy_threshold", 35.0)
+            try:
+                threshold_val = float(threshold)
+            except (TypeError, ValueError):
+                threshold_val = 35.0
+            for p in item.get("players", []):
+                pid = p.get("pid")
+                if pid is None or pid == player_pid:
+                    continue
+                if player_team is not None:
+                    team_id = p.get("team_id")
+                    if team_id is not None and team_id == player_team:
+                        continue
+                dist = distances.get(str(pid))
+                if dist is None:
+                    continue
+                try:
+                    if float(dist) > threshold_val:
+                        return True
+                except (TypeError, ValueError):
+                    continue
+            return False
+
+        def opponent_race_key(item: Dict[str, Any], player_pid: int | None) -> str:
+            races = []
+            for p in item.get("players", []):
+                pid = p.get("pid")
+                if pid is None or pid == player_pid:
+                    continue
+                race = p.get("race", "")
+                if race:
+                    races.append(race)
+            if not races:
+                return "Unknown"
+            return "+".join(sorted(races))
+
+        def compute_stats() -> str:
+            player_name = player_var.get()
+            if not player_name:
+                return "No player selected."
+
+            total_games = 0
+            total_wins = 0
+            total_seconds = 0
+            proxy_games = 0
+            proxy_wins = 0
+
+            by_matchup: Dict[str, Dict[str, int]] = {}
+            by_opponent_race: Dict[str, Dict[str, int]] = {}
+
+            for item in self.filtered_items:
+                player_entry = None
+                for p in item.get("players", []):
+                    if p.get("name") == player_name:
+                        player_entry = p
+                        break
+                if not player_entry:
+                    continue
+
+                total_games += 1
+                won = is_win(player_entry)
+                if won:
+                    total_wins += 1
+                total_seconds += parse_length_seconds(str(item.get("length", "")))
+
+                matchup = item.get("matchup", "Unknown") or "Unknown"
+                by_matchup.setdefault(matchup, {"games": 0, "wins": 0})
+                by_matchup[matchup]["games"] += 1
+                if won:
+                    by_matchup[matchup]["wins"] += 1
+
+                race_key = opponent_race_key(item, player_entry.get("pid"))
+                by_opponent_race.setdefault(race_key, {"games": 0, "wins": 0})
+                by_opponent_race[race_key]["games"] += 1
+                if won:
+                    by_opponent_race[race_key]["wins"] += 1
+
+                if is_proxy_against(item, player_entry.get("pid"), player_entry.get("team_id")):
+                    proxy_games += 1
+                    if won:
+                        proxy_wins += 1
+
+            if total_games == 0:
+                return "No games found for selected player in current filters."
+
+            lines = [
+                f"Player: {player_name}",
+                f"Games: {total_games}",
+                f"Win%: {round((total_wins / total_games) * 100, 1)}",
+                f"Total Time: {format_total_seconds(total_seconds)}",
+                f"Proxy Against%: {round((proxy_games / total_games) * 100, 1)}",
+                f"Win% vs Proxy: {round((proxy_wins / proxy_games) * 100, 1) if proxy_games else 0.0}",
+                "",
+                "Win% by Opponent Race:",
+            ]
+
+            for race_key in sorted(by_opponent_race.keys()):
+                data = by_opponent_race[race_key]
+                win_pct = round((data["wins"] / data["games"]) * 100, 1) if data["games"] else 0.0
+                lines.append(f"- {race_key}: {win_pct}% ({data['wins']}/{data['games']})")
+
+            lines.append("")
+            lines.append("Win% by Matchup:")
+            for matchup in sorted(by_matchup.keys()):
+                data = by_matchup[matchup]
+                win_pct = round((data["wins"] / data["games"]) * 100, 1) if data["games"] else 0.0
+                lines.append(f"- {matchup}: {win_pct}% ({data['wins']}/{data['games']})")
+
+            return "\n".join(lines)
+
+        def refresh_stats(_event: Any | None = None) -> None:
+            set_text(compute_stats())
+
+        player_combo.bind("<<ComboboxSelected>>", refresh_stats)
+        refresh_stats()
+
     def _format_proxy_by_player(self, item: Dict[str, Any]) -> str:
         distances = item.get("proxy_distances", {}) or {}
         players = item.get("players", [])
@@ -715,13 +1042,14 @@ class App:
             "fav": 0,
             "filename": 1,
             "players": 2,
-            "matchup": 3,
-            "map": 4,
-            "date": 5,
-            "length": 6,
-            "tags": 7,
-            "build_order": 8,
-            "proxy_dist": 9,
+            "winner": 3,
+            "matchup": 4,
+            "map": 5,
+            "date": 6,
+            "length": 7,
+            "tags": 8,
+            "build_order": 9,
+            "proxy_dist": 10,
         }
         idx = idx_map[column]
 
@@ -821,12 +1149,13 @@ class App:
                     "filename",
                     "path",
                     "map",
+                    "winner",
                     "matchup",
                     "date",
                     "length",
                     "players",
                     "favorite",
-                        "tags",
+                    "tags",
                     "build_order_manual",
                     "build_order_auto",
                     "proxy_distance",
@@ -843,6 +1172,7 @@ class App:
                         "filename": item.get("filename", ""),
                         "path": item.get("path", ""),
                         "map": item.get("map", ""),
+                        "winner": self._format_winner(item.get("players", [])),
                         "matchup": item.get("matchup", ""),
                         "date": format_date(item.get("start_time", "")),
                         "length": format_length(item.get("length", "")),
@@ -856,6 +1186,206 @@ class App:
                         "proxy_flag": bool(item.get("proxy_flag")),
                     }
                 )
+
+    def _export_full_csv(self) -> None:
+        if not self.index.get("replays", []):
+            messagebox.showinfo("No Data", "No replays to export. Please scan first.")
+            return
+        filename = filedialog.asksaveasfilename(
+            title="Export Full CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv")],
+        )
+        if not filename:
+            return
+
+        tags_map = self.tags.get("tags", {})
+        build_orders = self.tags.get("build_orders", {})
+        favorites = set(self.tags.get("favorites", []))
+
+        with open(filename, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(
+                f,
+                fieldnames=[
+                    "filename",
+                    "path",
+                    "source_folder",
+                    "map",
+                    "start_time",
+                    "length",
+                    "game_type",
+                    "speed",
+                    "matchup",
+                    "players",
+                    "build_order_auto",
+                    "bo_sequences",
+                    "proxy_flag",
+                    "proxy_distance_max",
+                    "proxy_distances",
+                    "proxy_threshold",
+                    "mtime",
+                    "size",
+                    "tags",
+                    "build_order_manual",
+                    "favorite",
+                ],
+            )
+            writer.writeheader()
+            for item in self.index.get("replays", []):
+                path = item.get("path", "")
+                writer.writerow(
+                    {
+                        "filename": item.get("filename", ""),
+                        "path": path,
+                        "source_folder": item.get("source_folder", ""),
+                        "map": item.get("map", ""),
+                        "start_time": item.get("start_time", ""),
+                        "length": item.get("length", ""),
+                        "game_type": item.get("game_type", ""),
+                        "speed": item.get("speed", ""),
+                        "matchup": item.get("matchup", ""),
+                        "players": json.dumps(item.get("players", []), ensure_ascii=False),
+                        "build_order_auto": item.get("build_order_auto", ""),
+                        "bo_sequences": json.dumps(item.get("bo_sequences", []), ensure_ascii=False),
+                        "proxy_flag": bool(item.get("proxy_flag")),
+                        "proxy_distance_max": item.get("proxy_distance_max", ""),
+                        "proxy_distances": json.dumps(item.get("proxy_distances", {}), ensure_ascii=False),
+                        "proxy_threshold": item.get("proxy_threshold", ""),
+                        "mtime": item.get("mtime", ""),
+                        "size": item.get("size", ""),
+                        "tags": ", ".join(tags_map.get(path, [])),
+                        "build_order_manual": build_orders.get(path, ""),
+                        "favorite": path in favorites,
+                    }
+                )
+
+    def _import_csv(self) -> None:
+        filename = filedialog.askopenfilename(
+            title="Import CSV",
+            filetypes=[("CSV Files", "*.csv")],
+        )
+        if not filename:
+            return
+        csv_path = Path(filename)
+        base_folder = csv_path.parent
+
+        try:
+            with open(filename, "r", newline="", encoding="utf-8") as f:
+                reader = csv.DictReader(f)
+                rows = list(reader)
+        except Exception as exc:  # noqa: BLE001
+            messagebox.showerror("Import Failed", f"Could not read CSV: {exc}")
+            return
+
+        if not rows:
+            messagebox.showinfo("No Data", "CSV is empty.")
+            return
+
+        def item_source_folder(item: Dict[str, Any]) -> str:
+            folder = item.get("source_folder", "") or ""
+            if folder:
+                return folder
+            index_folder = str(self.index.get("folder", ""))
+            path_value = str(item.get("path", ""))
+            if index_folder and path_value.startswith(index_folder):
+                return index_folder
+            try:
+                return str(Path(path_value).parent)
+            except Exception:
+                return ""
+
+        existing: Dict[str, Dict[str, Any]] = {}
+        for item in self.index.get("replays", []):
+            key = f"{item_source_folder(item)}|{item.get('filename', '')}"
+            existing[key] = item
+        tags_map = self.tags.get("tags", {})
+        build_orders = self.tags.get("build_orders", {})
+        favorites = set(self.tags.get("favorites", []))
+
+        def parse_json(value: str, fallback: Any) -> Any:
+            if value is None or value == "":
+                return fallback
+            try:
+                return json.loads(value)
+            except json.JSONDecodeError:
+                return fallback
+
+        imported = 0
+        for row in rows:
+            filename_value = (row.get("filename") or "").strip()
+            if not filename_value:
+                continue
+            local_path = (base_folder / filename_value).resolve()
+            row_path = (row.get("path") or "").strip()
+            if local_path.exists():
+                path = str(local_path)
+            elif row_path:
+                path = row_path
+            else:
+                path = str(local_path)
+
+            item = {
+                "path": path,
+                "filename": filename_value,
+                "source_folder": row.get("source_folder") or str(base_folder),
+                "map": row.get("map", ""),
+                "start_time": row.get("start_time", ""),
+                "length": row.get("length", ""),
+                "game_type": row.get("game_type", ""),
+                "speed": row.get("speed", ""),
+                "matchup": row.get("matchup", ""),
+                "players": parse_json(row.get("players", ""), []),
+                "build_order_auto": row.get("build_order_auto", ""),
+                "bo_sequences": parse_json(row.get("bo_sequences", ""), []),
+                "proxy_flag": str(row.get("proxy_flag", "")).lower() in {"true", "1", "yes"},
+                "proxy_distance_max": row.get("proxy_distance_max", ""),
+                "proxy_distances": parse_json(row.get("proxy_distances", ""), {}),
+                "proxy_threshold": row.get("proxy_threshold", ""),
+                "mtime": row.get("mtime", ""),
+                "size": row.get("size", ""),
+            }
+
+            key = f"{item.get('source_folder', '')}|{filename_value}"
+            existing[key] = item
+            imported += 1
+
+            tag_str = row.get("tags", "")
+            if tag_str:
+                incoming_tags = [t.strip() for t in tag_str.split(",") if t.strip()]
+                if incoming_tags:
+                    current_tags = set(tags_map.get(path, []))
+                    current_tags.update(incoming_tags)
+                    tags_map[path] = sorted(current_tags)
+
+            manual_bo = row.get("build_order_manual", "")
+            if manual_bo:
+                build_orders[path] = manual_bo
+
+            favorite_raw = str(row.get("favorite", "")).lower()
+            if favorite_raw in {"true", "1", "yes"}:
+                favorites.add(path)
+
+        self.index["replays"] = list(existing.values())
+        self.index["folders"] = sorted(
+            {item.get("source_folder", "") for item in self.index.get("replays", []) if item.get("source_folder")}
+        )
+        save_index(self.index)
+
+        self.tags["tags"] = tags_map
+        self.tags["build_orders"] = build_orders
+        self.tags["favorites"] = sorted(favorites)
+        save_tags(self.tags)
+
+        if str(base_folder) not in self.replay_folders:
+            self.replay_folders.append(str(base_folder))
+            self.settings["replay_folders"] = list(self.replay_folders)
+            self.settings["replay_folder"] = str(base_folder)
+            save_settings(self.settings)
+
+        self._sync_folder_controls()
+        self._refresh_filters()
+        self._refresh_list()
+        messagebox.showinfo("Import Complete", f"Imported {imported} replays.")
 
     def _clear_history(self) -> None:
         confirm = messagebox.askyesno(

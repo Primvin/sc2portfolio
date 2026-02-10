@@ -15,6 +15,21 @@ from .paths import get_data_dir
 INDEX_FILENAME = "replay_index.json"
 
 
+def _canonical_unit_name(name: str) -> str:
+    return name.replace(" ", "").replace("_", "").lower()
+
+
+def _build_unit_name_map(names: Iterable[str]) -> Dict[str, str]:
+    mapping: Dict[str, str] = {}
+    for name in names:
+        mapping.setdefault(_canonical_unit_name(name), name)
+    return mapping
+
+
+def _normalize_unit_name(name: str, mapping: Dict[str, str]) -> Optional[str]:
+    return mapping.get(_canonical_unit_name(name))
+
+
 def index_path() -> Path:
     return get_data_dir() / INDEX_FILENAME
 
@@ -96,7 +111,7 @@ def _proxy_info(replay: Any, threshold: float = 35.0) -> Dict[str, Any]:
         if pid is not None:
             players[pid] = p
 
-    townhalls = {
+    townhalls = [
         "Command Center",
         "Orbital Command",
         "Planetary Fortress",
@@ -104,8 +119,8 @@ def _proxy_info(replay: Any, threshold: float = 35.0) -> Dict[str, Any]:
         "Hatchery",
         "Lair",
         "Hive",
-    }
-    buildings = {
+    ]
+    buildings = [
         "Supply Depot",
         "Barracks",
         "Refinery",
@@ -144,15 +159,19 @@ def _proxy_info(replay: Any, threshold: float = 35.0) -> Dict[str, Any]:
         "Spine Crawler",
         "Spore Crawler",
         "Ultralisk Cavern",
-    }
+    ]
+    townhall_set = set(townhalls)
+    building_map = _build_unit_name_map(buildings)
 
     start_pos: Dict[int, Tuple[float, float]] = {}
-    first_building: Dict[int, Tuple[int, Tuple[float, float], str]] = {}
     building_events: Dict[int, List[Tuple[int, Tuple[float, float], str, bool]]] = {pid: [] for pid in players}
 
     for event in events:
         unit_type = getattr(event, "unit_type_name", None)
-        if not unit_type or unit_type not in buildings:
+        if not unit_type:
+            continue
+        unit_name = _normalize_unit_name(unit_type, building_map)
+        if not unit_name:
             continue
         pid = _event_player_id(event)
         if pid is None or pid not in players:
@@ -164,19 +183,12 @@ def _proxy_info(replay: Any, threshold: float = 35.0) -> Dict[str, Any]:
         if frame is None:
             frame = getattr(event, "gameloop", 0)
 
-        is_townhall = unit_type in townhalls
-        building_events[pid].append((frame, pos, unit_type, is_townhall))
+        is_townhall = unit_name in townhall_set
+        building_events[pid].append((frame, pos, unit_name, is_townhall))
 
         if is_townhall and pid not in start_pos:
             start_pos[pid] = pos
             continue
-
-        if is_townhall:
-            continue
-
-        current = first_building.get(pid)
-        if current is None or frame < current[0]:
-            first_building[pid] = (frame, pos, unit_type)
 
     for pid, events_list in building_events.items():
         if not events_list:
@@ -185,37 +197,24 @@ def _proxy_info(replay: Any, threshold: float = 35.0) -> Dict[str, Any]:
         events_list.sort(key=lambda e: e[0])
         if pid not in start_pos:
             start_pos[pid] = events_list[0][1]
-        if pid not in first_building:
-            for frame, pos, unit_type, is_townhall in events_list:
-                if is_townhall:
-                    continue
-                if pos != start_pos[pid] or frame != events_list[0][0]:
-                    first_building[pid] = (frame, pos, unit_type)
-                    break
-            if pid not in first_building:
-                logging.debug("No non-townhall building found for pid=%s", pid)
-
     distances: Dict[str, float] = {}
     max_dist: Optional[float] = None
-    epsilon = 0.5
     for pid, start in start_pos.items():
-        first = first_building.get(pid)
-        if not first:
-            logging.debug("Missing first building for pid=%s", pid)
+        events_list = building_events.get(pid, [])
+        if not events_list:
+            logging.debug("No building events for pid=%s", pid)
             continue
-        dist = _distance(start, first[1])
-        if dist <= epsilon:
-            # If the first building is at the same position, skip it and look for the next one
-            events_list = building_events.get(pid, [])
-            for frame, pos, unit_type, is_townhall in events_list:
-                if is_townhall:
-                    continue
-                dist = _distance(start, pos)
-                if dist > epsilon:
-                    break
-            else:
-                logging.debug("All buildings at start position for pid=%s", pid)
+        first_four: List[float] = []
+        for frame, pos, unit_type, is_townhall in events_list:
+            if is_townhall:
                 continue
+            first_four.append(_distance(start, pos))
+            if len(first_four) >= 4:
+                break
+        if not first_four:
+            logging.debug("No non-townhall building found for pid=%s", pid)
+            continue
+        dist = max(first_four)
         distances[str(pid)] = dist
         if max_dist is None or dist > max_dist:
             max_dist = dist
@@ -240,7 +239,7 @@ def _collect_sequences(replay: Any) -> List[Dict[str, Any]]:
         if pid is not None:
             players[pid] = p
 
-    tech_buildings = {
+    tech_buildings = [
         "Barracks",
         "Factory",
         "Starport",
@@ -263,9 +262,9 @@ def _collect_sequences(replay: Any) -> List[Dict[str, Any]]:
         "Spire",
         "Hive",
         "Infestation Pit",
-    }
+    ]
 
-    townhalls = {
+    townhalls = [
         "Command Center",
         "Orbital Command",
         "Planetary Fortress",
@@ -273,12 +272,17 @@ def _collect_sequences(replay: Any) -> List[Dict[str, Any]]:
         "Hatchery",
         "Lair",
         "Hive",
-    }
+    ]
+
+    tech_map = _build_unit_name_map(tech_buildings)
+    townhall_map = _build_unit_name_map(townhalls)
+    townhall_set = set(townhalls)
 
     workers = {"SCV", "Probe", "Drone"}
 
     seq_tech: Dict[int, List[str]] = {pid: [] for pid in players}
     seq_general: Dict[int, List[str]] = {pid: [] for pid in players}
+    skipped_start_townhall: Dict[int, bool] = {pid: False for pid in players}
 
     events = sorted(events, key=lambda e: getattr(e, "frame", getattr(e, "gameloop", 0)))
     max_steps = 8
@@ -293,12 +297,18 @@ def _collect_sequences(replay: Any) -> List[Dict[str, Any]]:
         if pid is None or pid not in players:
             continue
 
-        if unit_type in tech_buildings and len(seq_tech[pid]) < max_steps:
-            seq_tech[pid].append(unit_type)
+        unit_name_tech = _normalize_unit_name(unit_type, tech_map)
+        if unit_name_tech and len(seq_tech[pid]) < max_steps:
+            seq_tech[pid].append(unit_name_tech)
 
-        if unit_type not in workers and unit_type not in townhalls:
-            if len(seq_general[pid]) < max_steps:
-                seq_general[pid].append(unit_type)
+        unit_name_townhall = _normalize_unit_name(unit_type, townhall_map)
+        unit_name_general = unit_name_tech or unit_name_townhall or unit_type
+        if unit_type not in workers:
+            if unit_name_townhall in townhall_set and not skipped_start_townhall[pid]:
+                skipped_start_townhall[pid] = True
+            else:
+                if len(seq_general[pid]) < max_steps:
+                    seq_general[pid].append(unit_name_general)
 
     sequences: List[Dict[str, Any]] = []
     for pid, p in players.items():
@@ -342,7 +352,13 @@ def _player_summary(players: List[Any]) -> List[Dict[str, Any]]:
     return summary
 
 
-def _serialize_replay(replay: Any, path: Path, *, proxy_threshold: float = 35.0) -> Dict[str, Any]:
+def _serialize_replay(
+    replay: Any,
+    path: Path,
+    *,
+    proxy_threshold: float = 35.0,
+    source_folder: Optional[Path] = None,
+) -> Dict[str, Any]:
     start_time = getattr(replay, "start_time", None) or getattr(replay, "date", None)
     length = getattr(replay, "length", None)
 
@@ -351,6 +367,7 @@ def _serialize_replay(replay: Any, path: Path, *, proxy_threshold: float = 35.0)
     return {
         "path": str(path.resolve()),
         "filename": path.name,
+        "source_folder": str(source_folder) if source_folder else "",
         "map": getattr(replay, "map_name", None) or getattr(replay, "map", None) or "Unknown",
         "start_time": start_time.isoformat() if start_time else "",
         "length": str(length) if length else "",
@@ -413,7 +430,7 @@ def scan_replays(
 
         try:
             replay = load_replay(str(replay_file), load_level=3)
-            updated.append(_serialize_replay(replay, replay_file, proxy_threshold=proxy_threshold))
+            updated.append(_serialize_replay(replay, replay_file, proxy_threshold=proxy_threshold, source_folder=folder))
             if progress_cb:
                 progress_cb(idx, total)
         except Exception as exc:  # noqa: BLE001
@@ -421,7 +438,78 @@ def scan_replays(
             if progress_cb:
                 progress_cb(idx, total)
 
-    index = {"replays": updated, "errors": errors, "folder": str(folder), "proxy_threshold": proxy_threshold}
+    index = {
+        "replays": updated,
+        "errors": errors,
+        "folder": str(folder),
+        "folders": [str(folder)],
+        "proxy_threshold": proxy_threshold,
+    }
+    save_index(index)
+    return index
+
+
+def scan_replays_multi(
+    folders: Iterable[Path],
+    *,
+    use_cache: bool = True,
+    proxy_threshold: float = 35.0,
+    progress_cb: Optional[callable] = None,
+) -> Dict[str, Any]:
+    _ensure_sc2reader()
+    from sc2reader import load_replay
+
+    folder_list = [Path(folder).resolve() for folder in folders if folder]
+    existing = load_index() if use_cache else {"replays": []}
+    by_path = {item["path"]: item for item in existing.get("replays", [])}
+
+    replay_files: List[Tuple[Path, Path]] = []
+    for folder in folder_list:
+        for replay_file in _iter_replay_files(folder):
+            replay_files.append((replay_file, folder))
+
+    updated: List[Dict[str, Any]] = []
+    errors: List[str] = []
+    total = len(replay_files)
+    for idx, (replay_file, source_folder) in enumerate(replay_files, start=1):
+        resolved = str(replay_file.resolve())
+        stat = replay_file.stat()
+        cached = by_path.get(resolved)
+        if (
+            cached
+            and cached.get("mtime") == stat.st_mtime
+            and cached.get("size") == stat.st_size
+            and cached.get("proxy_threshold") == proxy_threshold
+            and cached.get("source_folder") == str(source_folder)
+        ):
+            updated.append(cached)
+            if progress_cb:
+                progress_cb(idx, total)
+            continue
+
+        try:
+            replay = load_replay(str(replay_file), load_level=3)
+            updated.append(
+                _serialize_replay(
+                    replay,
+                    replay_file,
+                    proxy_threshold=proxy_threshold,
+                    source_folder=source_folder,
+                )
+            )
+            if progress_cb:
+                progress_cb(idx, total)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{replay_file}: {exc}")
+            if progress_cb:
+                progress_cb(idx, total)
+
+    index = {
+        "replays": updated,
+        "errors": errors,
+        "folders": [str(folder) for folder in folder_list],
+        "proxy_threshold": proxy_threshold,
+    }
     save_index(index)
     return index
 
