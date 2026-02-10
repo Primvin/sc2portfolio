@@ -187,8 +187,10 @@ class App:
         ttk.Label(filter_row, text="Folder:").pack(side=tk.LEFT, padx=6)
         self.folder_combo = ttk.Combobox(filter_row, textvariable=self.folder_filter, state="readonly", width=28)
         self.folder_combo.pack(side=tk.LEFT, padx=6)
-        self.folder_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
-        self.folder_combo.bind("<<ComboboxSelected>>", lambda _e: self._scroll_combo_to_end(self.folder_combo))
+        self.folder_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _e: (self._refresh_list(), self._scroll_combo_to_end(self.folder_combo)),
+        )
         self.folder_combo.bind("<FocusIn>", lambda _e: self._scroll_combo_to_end(self.folder_combo))
 
         ttk.Label(filter_row, text="Race:").pack(side=tk.LEFT)
