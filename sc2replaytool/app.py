@@ -20,7 +20,13 @@ from typing import Dict, Any, List
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
-from .core.indexer import scan_replays, scan_replays_multi, load_index
+from .core.indexer import (
+    scan_replays,
+    scan_replays_multi,
+    scan_replays_delta,
+    scan_replays_multi_delta,
+    load_index,
+)
 from .core.tags import load_tags, save_tags, set_favorite, set_build_order, set_tags
 from .core.paths import get_data_dir
 
@@ -105,14 +111,15 @@ class App:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("SC2 Replay Analyzer")
-        self.root.geometry("1200x820")
-        self.root.minsize(1100, 700)
+        self.root.geometry("1200x980")
+        self.root.minsize(1100, 820)
 
         self.index: Dict[str, Any] = load_index()
         self.tags: Dict[str, Any] = load_tags()
         self.settings: Dict[str, Any] = load_settings()
 
         replay_folders = list(self.settings.get("replay_folders", []))
+        self.replay_folder_labels: Dict[str, str] = dict(self.settings.get("replay_folder_labels", {}))
         legacy_folder = self.settings.get("replay_folder", "")
         if legacy_folder and legacy_folder not in replay_folders:
             replay_folders.append(legacy_folder)
@@ -120,8 +127,8 @@ class App:
         default_folder = legacy_folder if legacy_folder in replay_folders else (replay_folders[0] if replay_folders else "")
         self.replay_folder = tk.StringVar(value=default_folder)
         self.folder_filter = tk.StringVar(value="All")
+        self.folder_label_entry = tk.StringVar(value="")
         self.matchup_filter = tk.StringVar(value="All")
-        self.build_order_mode = tk.StringVar(value="Tech")
         self.tag_filter = tk.StringVar(value="All")
         self.player_count_filter = tk.StringVar(value="All")
         self.race_filter = tk.StringVar(value="All")
@@ -130,6 +137,8 @@ class App:
         self.proxy_only = tk.BooleanVar(value=False)
         self.favorite_only = tk.BooleanVar(value=False)
         self.proxy_threshold = tk.StringVar(value=str(self.settings.get("proxy_threshold", 35.0)))
+        self.watch_enabled = tk.BooleanVar(value=bool(self.settings.get("watch_enabled", False)))
+        self.watch_interval_seconds = tk.StringVar(value=str(self.settings.get("watch_interval_seconds", 15)))
         self.bo_step_vars = [tk.StringVar(value="Any") for _ in range(8)]
         self.build_order_entry = tk.StringVar(value="")
         self.tags_entry = tk.StringVar(value="")
@@ -139,9 +148,29 @@ class App:
         self.status = tk.StringVar(value="Ready")
         self.progress_var = tk.DoubleVar(value=0.0)
         self.scan_hint = tk.StringVar(value="")
+        self.selected_replay_path = tk.StringVar(value="")
+        self.new_replays_header = tk.StringVar(value="")
+        self.new_replays_selected_info = tk.StringVar(value="Selectionne une game pour editer tags/favorite.")
+        self.new_replays_tags = tk.StringVar(value="")
+        self.new_replays_fav = tk.BooleanVar(value=False)
 
         self.scan_queue: Queue[Any] = Queue()
         self._scan_log_path = get_data_dir() / "scan_debug.log"
+        self._scan_in_progress = False
+        self._scan_context = "manual"
+        self._startup_known_paths: set[str] = set()
+        self._scan_notify_new = False
+        self._scan_baseline_paths: set[str] = set()
+        self._scan_update_ui = True
+        self._scan_delta_only = False
+        self._watch_enabled = bool(self.watch_enabled.get())
+        initial_watch_ms = self._get_watch_interval_ms_silent(default_ms=15000)
+        self._watch_interval_ms = initial_watch_ms if initial_watch_ms > 0 else 15000
+        self._new_replays_window: tk.Toplevel | None = None
+        self._new_replays_tree: ttk.Treeview | None = None
+        self._new_replays_by_path: Dict[str, Dict[str, Any]] = {}
+        self._folder_display_to_path: Dict[str, str] = {}
+        self._folder_path_to_display: Dict[str, str] = {}
 
         self._build_ui()
         self._sync_folder_controls()
@@ -149,18 +178,34 @@ class App:
         self.last_sort_column = "date"
         self._refresh_filters()
         self._refresh_list()
+        self.root.after(300, self._auto_scan_on_startup)
+        self.root.after(5000, self._watch_loop)
 
     def _build_ui(self) -> None:
         frame = ttk.Frame(self.root, padding=10)
         frame.pack(fill=tk.BOTH, expand=True)
 
-        folder_row = ttk.Frame(frame)
+        tabs = ttk.Notebook(frame)
+        tabs.pack(fill=tk.X, pady=(0, 6))
+
+        folder_tab = ttk.Frame(tabs, padding=8)
+        build_order_tab = ttk.Frame(tabs, padding=8)
+        search_tab = ttk.Frame(tabs, padding=8)
+        tabs.add(folder_tab, text="Folder")
+        tabs.add(build_order_tab, text="Build Order")
+        tabs.add(search_tab, text="Search")
+
+        folder_row = ttk.Frame(folder_tab)
         folder_row.pack(fill=tk.X)
 
         ttk.Label(folder_row, text="Replay Folders:").pack(side=tk.LEFT)
-        self.replay_folder_combo = ttk.Combobox(folder_row, textvariable=self.replay_folder, state="readonly", width=70)
+        self.replay_folder_combo = ttk.Combobox(folder_row, state="readonly", width=70)
         self.replay_folder_combo.pack(side=tk.LEFT, padx=6)
+        self.replay_folder_combo.bind("<<ComboboxSelected>>", self._on_replay_folder_selected)
+        ttk.Label(folder_row, text="Name:").pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Entry(folder_row, textvariable=self.folder_label_entry, width=24).pack(side=tk.LEFT, padx=6)
         ttk.Button(folder_row, text="Add Folder", command=self._browse_folder).pack(side=tk.LEFT)
+        ttk.Button(folder_row, text="Save Name", command=self._save_folder_name).pack(side=tk.LEFT, padx=4)
         ttk.Button(folder_row, text="Remove", command=self._remove_folder).pack(side=tk.LEFT, padx=6)
         ttk.Button(folder_row, text="Scan Selected", command=self._start_scan).pack(side=tk.LEFT)
         ttk.Button(folder_row, text="Scan All", command=self._start_scan_all).pack(side=tk.LEFT, padx=6)
@@ -176,7 +221,16 @@ class App:
             relief=tk.FLAT,
         ).pack(side=tk.RIGHT)
 
-        filter_row = ttk.Frame(frame)
+        action_row = ttk.Frame(folder_tab)
+        action_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(action_row, text="Export Full CSV", command=self._export_full_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Button(action_row, text="Import CSV", command=self._import_csv).pack(side=tk.LEFT, padx=6)
+        ttk.Checkbutton(action_row, text="Auto Watch", variable=self.watch_enabled, command=self._on_watch_toggle).pack(side=tk.LEFT, padx=10)
+        ttk.Label(action_row, text="Watch (s):").pack(side=tk.LEFT)
+        ttk.Entry(action_row, textvariable=self.watch_interval_seconds, width=6).pack(side=tk.LEFT, padx=4)
+        ttk.Button(action_row, text="Set Watch", command=self._set_watch_settings).pack(side=tk.LEFT, padx=6)
+
+        filter_row = ttk.Frame(search_tab)
         filter_row.pack(fill=tk.X, pady=8)
 
         ttk.Label(filter_row, text="Matchup:").pack(side=tk.LEFT)
@@ -212,22 +266,9 @@ class App:
         self.tag_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
         self.tag_combo.bind("<KeyRelease>", lambda _e: self._refresh_list())
 
-        bo_mode_row = ttk.Frame(frame)
-        bo_mode_row.pack(fill=tk.X, pady=4)
-        ttk.Label(bo_mode_row, text="Build Order Mode:").pack(side=tk.LEFT)
-        self.build_order_mode_combo = ttk.Combobox(
-            bo_mode_row,
-            textvariable=self.build_order_mode,
-            state="readonly",
-            width=12,
-            values=["Tech", "General"],
-        )
-        self.build_order_mode_combo.pack(side=tk.LEFT, padx=6)
-        self.build_order_mode_combo.bind("<<ComboboxSelected>>", lambda _e: self._on_build_order_mode_change())
-
-        bo_steps_row1 = ttk.Frame(frame)
+        bo_steps_row1 = ttk.Frame(build_order_tab)
         bo_steps_row1.pack(fill=tk.X, pady=2)
-        bo_steps_row2 = ttk.Frame(frame)
+        bo_steps_row2 = ttk.Frame(build_order_tab)
         bo_steps_row2.pack(fill=tk.X, pady=2)
         self.bo_step_combos: List[ttk.Combobox] = []
         for i in range(8):
@@ -240,7 +281,13 @@ class App:
             combo.bind("<<ComboboxSelected>>", lambda _e, idx=i: self._on_build_order_step_change(idx))
             self.bo_step_combos.append(combo)
 
-        search_row = ttk.Frame(frame)
+        bo_manual_row = ttk.Frame(build_order_tab)
+        bo_manual_row.pack(fill=tk.X, pady=(8, 0))
+        ttk.Label(bo_manual_row, text="Selected Build Order (manual):").pack(side=tk.LEFT)
+        ttk.Entry(bo_manual_row, textvariable=self.build_order_entry, width=36).pack(side=tk.LEFT, padx=6)
+        ttk.Button(bo_manual_row, text="Set", command=self._set_selected_build_order).pack(side=tk.LEFT)
+
+        search_row = ttk.Frame(search_tab)
         search_row.pack(fill=tk.X, pady=4)
         ttk.Label(search_row, text="Player:").pack(side=tk.LEFT)
         player_entry = ttk.Entry(search_row, textvariable=self.player_filter, width=20)
@@ -251,38 +298,27 @@ class App:
         map_entry = ttk.Entry(search_row, textvariable=self.map_filter, width=24)
         map_entry.pack(side=tk.LEFT, padx=6)
         map_entry.bind("<KeyRelease>", lambda _e: self._refresh_list())
+        ttk.Button(search_row, text="Stats", command=self._open_stats_window).pack(side=tk.LEFT, padx=6)
 
-        action_row = ttk.Frame(frame)
-        action_row.pack(fill=tk.X)
+        search_tools_row = ttk.Frame(search_tab)
+        search_tools_row.pack(fill=tk.X, pady=4)
+        ttk.Label(search_tools_row, text="Proxy Threshold:").pack(side=tk.LEFT, padx=6)
+        ttk.Entry(search_tools_row, textvariable=self.proxy_threshold, width=6).pack(side=tk.LEFT)
+        ttk.Button(search_tools_row, text="Set Threshold", command=self._set_proxy_threshold).pack(side=tk.LEFT, padx=6)
 
-        ttk.Label(action_row, text="Selected Build Order (manual):").pack(side=tk.LEFT)
-        ttk.Entry(action_row, textvariable=self.build_order_entry, width=30).pack(side=tk.LEFT, padx=6)
-        ttk.Button(action_row, text="Set", command=self._set_selected_build_order).pack(side=tk.LEFT)
-        ttk.Button(action_row, text="Export CSV", command=self._export_csv).pack(side=tk.LEFT, padx=6)
-        ttk.Button(action_row, text="Export Full CSV", command=self._export_full_csv).pack(side=tk.LEFT, padx=6)
-        ttk.Button(action_row, text="Import CSV", command=self._import_csv).pack(side=tk.LEFT, padx=6)
-        ttk.Button(action_row, text="Stats", command=self._open_stats_window).pack(side=tk.LEFT, padx=6)
-
-        ttk.Label(action_row, text="Proxy Threshold:").pack(side=tk.LEFT, padx=6)
-        ttk.Entry(action_row, textvariable=self.proxy_threshold, width=6).pack(side=tk.LEFT)
-        ttk.Button(action_row, text="Set Threshold", command=self._set_proxy_threshold).pack(side=tk.LEFT, padx=6)
-
-        tags_row = ttk.Frame(frame)
-        tags_row.pack(fill=tk.X, pady=4)
-        ttk.Button(tags_row, text="Toggle Favorite", command=self._toggle_favorite).pack(side=tk.LEFT, padx=6)
-        ttk.Label(tags_row, text="New Tag:").pack(side=tk.LEFT)
-        ttk.Entry(tags_row, textvariable=self.new_tag_entry, width=16).pack(side=tk.LEFT, padx=6)
-        ttk.Button(tags_row, text="Add To Selected", command=self._add_new_tag_to_selected).pack(side=tk.LEFT, padx=6)
-        ttk.Label(tags_row, text="Tag Search:").pack(side=tk.LEFT, padx=6)
-        self.tag_search_combo = ttk.Combobox(tags_row, textvariable=self.tags_search, state="normal", width=24)
+        tag_search_row = ttk.Frame(search_tab)
+        tag_search_row.pack(fill=tk.X, pady=4)
+        ttk.Label(tag_search_row, text="Tag Search:").pack(side=tk.LEFT, padx=6)
+        self.tag_search_combo = ttk.Combobox(tag_search_row, textvariable=self.tags_search, state="normal", width=24)
         self.tag_search_combo.pack(side=tk.LEFT, padx=6)
+        self.tag_search_combo.configure(postcommand=self._refresh_tag_combo_values)
         self.tag_search_combo.bind("<KeyRelease>", lambda _e: self._on_tag_search_change())
         self.tag_search_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
 
         columns = ("fav", "filename", "players", "winner", "matchup", "map", "date", "length", "tags", "build_order", "proxy_dist")
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=18)
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=18, selectmode="extended")
         self._sort_state = {}
         self.tree.heading("fav", text="Fav", command=lambda: self._sort_by("fav"))
         self.tree.heading("filename", text="Filename", command=lambda: self._sort_by("filename"))
@@ -336,12 +372,19 @@ class App:
 
         details_tags_row = ttk.Frame(frame)
         details_tags_row.pack(fill=tk.X, pady=4)
-        ttk.Label(details_tags_row, text="Edit Tags (comma):").pack(side=tk.LEFT)
-        ttk.Entry(details_tags_row, textvariable=self.tags_entry, width=32).pack(side=tk.LEFT, padx=6)
+        ttk.Button(details_tags_row, text="Toggle Favorite", command=self._toggle_favorite).pack(side=tk.LEFT, padx=6)
+        ttk.Label(details_tags_row, text="New Tag:").pack(side=tk.LEFT)
+        ttk.Entry(details_tags_row, textvariable=self.new_tag_entry, width=16).pack(side=tk.LEFT, padx=6)
+        ttk.Button(details_tags_row, text="Add To Selected", command=self._add_new_tag_to_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Separator(details_tags_row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
         ttk.Label(details_tags_row, text="Add Existing:").pack(side=tk.LEFT, padx=6)
         self.edit_tag_combo = ttk.Combobox(details_tags_row, textvariable=self.edit_tag_select, state="readonly", width=18)
         self.edit_tag_combo.pack(side=tk.LEFT, padx=6)
+        self.edit_tag_combo.configure(postcommand=self._refresh_tag_combo_values)
         ttk.Button(details_tags_row, text="Add Tag", command=self._add_existing_tag_to_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Separator(details_tags_row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        ttk.Label(details_tags_row, text="Edit Tags (comma):").pack(side=tk.LEFT)
+        ttk.Entry(details_tags_row, textvariable=self.tags_entry, width=32).pack(side=tk.LEFT, padx=6)
         ttk.Button(details_tags_row, text="Update Tags", command=self._set_selected_tags).pack(side=tk.LEFT)
 
         open_row = ttk.Frame(frame)
@@ -360,8 +403,14 @@ class App:
             if folder not in self.replay_folders:
                 self.replay_folders.append(folder)
             self.replay_folder.set(folder)
+            label = self.folder_label_entry.get().strip()
+            if label:
+                self.replay_folder_labels[folder] = label
+            else:
+                self.replay_folder_labels.pop(folder, None)
             self.settings["replay_folders"] = list(self.replay_folders)
             self.settings["replay_folder"] = folder
+            self.settings["replay_folder_labels"] = dict(self.replay_folder_labels)
             save_settings(self.settings)
             self._sync_folder_controls()
 
@@ -371,7 +420,9 @@ class App:
             return
         if folder in self.replay_folders:
             self.replay_folders = [f for f in self.replay_folders if f != folder]
+            self.replay_folder_labels.pop(folder, None)
             self.settings["replay_folders"] = list(self.replay_folders)
+            self.settings["replay_folder_labels"] = dict(self.replay_folder_labels)
             if self.replay_folders:
                 self.replay_folder.set(self.replay_folders[0])
                 self.settings["replay_folder"] = self.replay_folders[0]
@@ -381,6 +432,20 @@ class App:
             save_settings(self.settings)
             self._sync_folder_controls()
             self._refresh_list()
+
+    def _save_folder_name(self) -> None:
+        folder = self.replay_folder.get().strip()
+        if not folder:
+            messagebox.showinfo("No Folder", "Select a folder first.")
+            return
+        label = self.folder_label_entry.get().strip()
+        if label:
+            self.replay_folder_labels[folder] = label
+        else:
+            self.replay_folder_labels.pop(folder, None)
+        self.settings["replay_folder_labels"] = dict(self.replay_folder_labels)
+        save_settings(self.settings)
+        self._sync_folder_controls()
 
     def _start_scan(self) -> None:
         self._log_scan("Scan button clicked")
@@ -400,9 +465,7 @@ class App:
             self.scan_hint.set("")
             return
         self._log_scan(f"Proxy threshold: {threshold}")
-        thread = threading.Thread(target=self._scan_worker, args=([Path(folder)], threshold), daemon=True)
-        thread.start()
-        self.root.after(100, self._poll_scan)
+        self._start_scan_thread([Path(folder)], threshold, context="manual")
 
     def _start_scan_all(self) -> None:
         self._log_scan("Scan all button clicked")
@@ -420,13 +483,69 @@ class App:
             self.scan_hint.set("")
             return
         self._log_scan(f"Proxy threshold: {threshold}")
-        thread = threading.Thread(
-            target=self._scan_worker,
-            args=([Path(folder) for folder in self.replay_folders], threshold),
-            daemon=True,
+        self._start_scan_thread([Path(folder) for folder in self.replay_folders], threshold, context="manual")
+
+    def _auto_scan_on_startup(self) -> None:
+        if not self.replay_folders:
+            return
+        threshold = self._get_proxy_threshold_silent(default=35.0)
+        self._startup_known_paths = {str(item.get("path", "")) for item in self.index.get("replays", []) if item.get("path")}
+        self.status.set("Checking for new replays...")
+        self.scan_hint.set("Startup check...")
+        self.progress_var.set(0.0)
+        self.progress["value"] = 0
+        self._log_scan("Auto-scan on startup")
+        self._start_scan_thread(
+            [Path(folder) for folder in self.replay_folders],
+            threshold,
+            context="startup",
+            notify_new=True,
+            baseline_paths=set(self._startup_known_paths),
+            update_ui=True,
+            delta_only=True,
         )
+
+    def _watch_loop(self) -> None:
+        try:
+            if self._watch_enabled and self.replay_folders and not self._scan_in_progress:
+                threshold = self._get_proxy_threshold_silent(default=35.0)
+                known_paths = {str(item.get("path", "")) for item in self.index.get("replays", []) if item.get("path")}
+                self._start_scan_thread(
+                    [Path(folder) for folder in self.replay_folders],
+                    threshold,
+                    context="watch",
+                    notify_new=True,
+                    baseline_paths=known_paths,
+                    update_ui=False,
+                    delta_only=True,
+                )
+        finally:
+            self.root.after(self._watch_interval_ms, self._watch_loop)
+
+    def _start_scan_thread(
+        self,
+        folders: List[Path],
+        threshold: float,
+        *,
+        context: str,
+        notify_new: bool = False,
+        baseline_paths: set[str] | None = None,
+        update_ui: bool = True,
+        delta_only: bool = False,
+    ) -> bool:
+        if self._scan_in_progress:
+            self.status.set("Scan already running...")
+            return False
+        self._scan_in_progress = True
+        self._scan_context = context
+        self._scan_notify_new = notify_new
+        self._scan_baseline_paths = set(baseline_paths or set())
+        self._scan_update_ui = update_ui
+        self._scan_delta_only = delta_only
+        thread = threading.Thread(target=self._scan_worker, args=(folders, threshold), daemon=True)
         thread.start()
         self.root.after(100, self._poll_scan)
+        return True
 
     def _reload_index(self) -> None:
         self.index = load_index()
@@ -439,8 +558,12 @@ class App:
             self.scan_queue.put(("progress", current, total))
 
         try:
-            if len(folders) == 1:
+            if len(folders) == 1 and self._scan_delta_only:
+                index = scan_replays_delta(folders[0], proxy_threshold=threshold, progress_cb=progress_cb)
+            elif len(folders) == 1:
                 index = scan_replays(folders[0], proxy_threshold=threshold, progress_cb=progress_cb)
+            elif self._scan_delta_only:
+                index = scan_replays_multi_delta(folders, proxy_threshold=threshold, progress_cb=progress_cb)
             else:
                 index = scan_replays_multi(folders, proxy_threshold=threshold, progress_cb=progress_cb)
             self.scan_queue.put(("done", index))
@@ -454,33 +577,72 @@ class App:
         item = self.scan_queue.get()
         if isinstance(item, tuple) and item[0] == "progress":
             _tag, current, total = item
-            if total:
+            if total and self._scan_update_ui:
                 percent = (current / total) * 100.0
                 self.progress_var.set(percent)
                 self.status.set(f"Scanning... {current}/{total}")
             self.root.after(50, self._poll_scan)
             return
         if isinstance(item, tuple) and item[0] == "done":
+            context = self._scan_context
+            notify_new = self._scan_notify_new
+            baseline_paths = set(self._scan_baseline_paths)
             self.index = item[1]
             self.tags = load_tags()
-            self.progress_var.set(100.0)
-            self.status.set("Scan complete")
-            self.scan_hint.set("")
-            self._refresh_filters()
-            self._refresh_list()
+            new_items: List[Dict[str, Any]] = []
+            if notify_new:
+                new_items = [r for r in self.index.get("replays", []) if r.get("path") not in baseline_paths]
+            if self._scan_update_ui:
+                self.progress_var.set(100.0)
+                self.status.set("Scan complete")
+                self.scan_hint.set("")
+            self._scan_in_progress = False
+            should_refresh_ui = self._scan_update_ui or bool(new_items)
+            if should_refresh_ui:
+                self._refresh_filters()
+                self._refresh_list()
             self._log_scan("Scan complete")
+            if notify_new:
+                if new_items:
+                    self._show_new_replays_window(new_items, source_context=context)
+                elif context == "startup":
+                    self.status.set("No new replays found on startup")
+            self._scan_context = "manual"
+            self._scan_notify_new = False
+            self._scan_baseline_paths = set()
+            self._scan_update_ui = True
+            self._scan_delta_only = False
             return
         if isinstance(item, tuple) and item[0] == "error":
             _tag, message = item
-            self.status.set("Scan failed")
+            context = self._scan_context
+            if self._scan_update_ui:
+                self.status.set("Scan failed")
             self._log_scan(f"Scan failed: {message}")
-            self.scan_hint.set("")
-            messagebox.showerror("Scan failed", message)
+            if self._scan_update_ui:
+                self.scan_hint.set("")
+            self._scan_in_progress = False
+            self._scan_context = "manual"
+            self._scan_notify_new = False
+            self._scan_baseline_paths = set()
+            self._scan_update_ui = True
+            self._scan_delta_only = False
+            if context != "watch":
+                messagebox.showerror("Scan failed", message)
             return
+        self._scan_in_progress = False
+        self._scan_context = "manual"
+        self._scan_notify_new = False
+        self._scan_baseline_paths = set()
+        self._scan_update_ui = True
+        self._scan_delta_only = False
 
     def _refresh_filters(self) -> None:
         self._sync_folder_controls()
-        matchups = sorted({item.get("matchup", "Unknown") for item in self.index.get("replays", [])})
+        matchups = sorted(
+            {item.get("matchup", "Unknown") for item in self.index.get("replays", [])},
+            key=lambda value: (len(str(value)), str(value).lower()),
+        )
         matchups = ["All"] + matchups
         self.matchup_combo["values"] = matchups
         if self.matchup_filter.get() not in matchups:
@@ -500,24 +662,69 @@ class App:
         if self.tag_filter.get() == "":
             self.tag_filter.set("All")
         self.available_tags = sorted(set(tag_values[1:]))
-        self.tag_search_combo["values"] = self.available_tags
-        self.edit_tag_combo["values"] = self.available_tags
+        self._refresh_tag_combo_values()
         self._refresh_build_order_options()
         self._refresh_list()
 
+    def _refresh_tag_combo_values(self) -> None:
+        tags_set = set()
+        for tag_list in self.tags.get("tags", {}).values():
+            for tag in tag_list:
+                tags_set.add(tag)
+        self.available_tags = sorted(tags_set)
+        if hasattr(self, "tag_search_combo"):
+            self.tag_search_combo["values"] = self.available_tags
+        if hasattr(self, "edit_tag_combo"):
+            self.edit_tag_combo["values"] = self.available_tags
+
     def _sync_folder_controls(self) -> None:
         values = list(self.replay_folders)
-        if hasattr(self, "replay_folder_combo"):
-            self.replay_folder_combo["values"] = values
         if self.replay_folder.get() not in values:
             self.replay_folder.set(values[0] if values else "")
-        folder_values = ["All"] + values
+
+        display_to_path: Dict[str, str] = {}
+        path_to_display: Dict[str, str] = {}
+        for path in values:
+            label = self.replay_folder_labels.get(path, "").strip()
+            base = label if label else path
+            display = base
+            if display in display_to_path:
+                display = f"{base} [{Path(path).name}]"
+            if display in display_to_path:
+                display = f"{base} [{path}]"
+            display_to_path[display] = path
+            path_to_display[path] = display
+        self._folder_display_to_path = display_to_path
+        self._folder_path_to_display = path_to_display
+
+        if hasattr(self, "replay_folder_combo"):
+            display_values = [path_to_display[path] for path in values if path in path_to_display]
+            self.replay_folder_combo["values"] = display_values
+            selected_path = self.replay_folder.get()
+            self.replay_folder_combo.set(path_to_display.get(selected_path, ""))
+
+        selected_label = self.replay_folder_labels.get(self.replay_folder.get(), "")
+        self.folder_label_entry.set(selected_label)
+
+        folder_values = ["All"] + [path_to_display[path] for path in values if path in path_to_display]
         if hasattr(self, "folder_combo"):
             self.folder_combo["values"] = folder_values
         if self.folder_filter.get() not in folder_values:
             self.folder_filter.set("All")
         if hasattr(self, "folder_combo"):
             self._scroll_combo_to_end(self.folder_combo)
+
+    def _on_replay_folder_selected(self, _event: Any | None = None) -> None:
+        display_value = self.replay_folder_combo.get().strip()
+        selected_path = self._folder_display_to_path.get(display_value, "")
+        if not selected_path:
+            return
+        self.replay_folder.set(selected_path)
+        self.settings["replay_folder"] = selected_path
+        self.settings["replay_folders"] = list(self.replay_folders)
+        save_settings(self.settings)
+        self.folder_label_entry.set(self.replay_folder_labels.get(selected_path, ""))
+        self._sync_folder_controls()
 
     def _scroll_combo_to_end(self, combo: ttk.Combobox) -> None:
         try:
@@ -548,10 +755,12 @@ class App:
     def _folder_matches(self, item: Dict[str, Any], folder_filter: str) -> bool:
         if folder_filter == "All":
             return True
+        folder_filter_path = self._folder_display_to_path.get(folder_filter, folder_filter)
         item_folder = self._item_source_folder(item)
-        return self._normalize_path(item_folder) == self._normalize_path(folder_filter)
+        return self._normalize_path(item_folder) == self._normalize_path(folder_filter_path)
 
     def _refresh_list(self) -> None:
+        selected_before = self._get_selected_path()
         self.tree.delete(*self.tree.get_children())
 
         matchup_filter = self.matchup_filter.get()
@@ -567,6 +776,7 @@ class App:
         self.filtered_items: List[Dict[str, Any]] = []
         selected_steps = self._normalized_bo_steps()
 
+        inserted_by_path: Dict[str, str] = {}
         for item in self.index.get("replays", []):
             if not self._folder_matches(item, folder_filter):
                 continue
@@ -604,7 +814,7 @@ class App:
                 continue
             self.filtered_items.append(item)
 
-            self.tree.insert(
+            node_id = self.tree.insert(
                 "",
                 tk.END,
                 values=(
@@ -622,18 +832,43 @@ class App:
                 ),
                 tags=(item.get("path"),),
             )
+            item_path = str(item.get("path", ""))
+            if item_path:
+                inserted_by_path[item_path] = node_id
 
         self.status.set(f"Loaded {len(self.tree.get_children())} replays")
+        if selected_before and selected_before in inserted_by_path:
+            node_id = inserted_by_path[selected_before]
+            self.tree.selection_set(node_id)
+            self.tree.focus(node_id)
         if hasattr(self, "last_sort_column"):
             self._sort_by(self.last_sort_column, toggle=False)
 
     def _get_selected_path(self) -> str | None:
         selection = self.tree.selection()
         if not selection:
-            return None
+            value = self.selected_replay_path.get().strip()
+            return value if value else None
         item = self.tree.item(selection[0])
         tags = item.get("tags") or []
-        return tags[0] if tags else None
+        path = tags[0] if tags else None
+        if path:
+            self.selected_replay_path.set(str(path))
+        return path
+
+    def _get_selected_paths(self) -> List[str]:
+        selection = self.tree.selection()
+        paths: List[str] = []
+        for selected in selection:
+            item = self.tree.item(selected)
+            tags = item.get("tags") or []
+            if tags and tags[0]:
+                paths.append(str(tags[0]))
+        if paths:
+            self.selected_replay_path.set(paths[0])
+            return paths
+        fallback = self.selected_replay_path.get().strip()
+        return [fallback] if fallback else []
 
     def _on_select(self, _event: Any) -> None:
         path = self._get_selected_path()
@@ -641,6 +876,7 @@ class App:
             self.build_order_entry.set("")
             self._set_details("")
             return
+        self.selected_replay_path.set(path)
         current_bo = self.tags.get("build_orders", {}).get(path, "")
         self.build_order_entry.set(current_bo)
         current_tags = self.tags.get("tags", {}).get(path, [])
@@ -683,42 +919,44 @@ class App:
         self._set_details("\n".join(details))
 
     def _set_selected_build_order(self) -> None:
-        path = self._get_selected_path()
-        if not path:
+        paths = self._get_selected_paths()
+        if not paths:
             messagebox.showinfo("No Selection", "Select a replay first.")
             return
         value = self.build_order_entry.get().strip()
-        set_build_order(self.tags, path, value)
+        for path in paths:
+            set_build_order(self.tags, path, value)
         save_tags(self.tags)
         self._refresh_filters()
         self._refresh_list()
+        self.status.set(f"Build order updated for {len(paths)} replay(s)")
 
     def _set_selected_tags(self) -> None:
-        path = self._get_selected_path()
-        if not path:
+        paths = self._get_selected_paths()
+        if not paths:
             messagebox.showinfo("No Selection", "Select a replay first.")
             return
         raw = self.tags_entry.get().strip()
         tag_list = [t.strip() for t in raw.split(",")] if raw else []
-        set_tags(self.tags, path, tag_list)
+        for path in paths:
+            set_tags(self.tags, path, tag_list)
         save_tags(self.tags)
         self._refresh_filters()
         self._refresh_list()
+        self.status.set(f"Tags updated for {len(paths)} replay(s)")
 
     def _toggle_favorite(self) -> None:
-        path = self._get_selected_path()
-        if not path:
+        paths = self._get_selected_paths()
+        if not paths:
             messagebox.showinfo("No Selection", "Select a replay first.")
             return
-        is_fav = path in set(self.tags.get("favorites", []))
-        set_favorite(self.tags, path, not is_fav)
+        favorites = set(self.tags.get("favorites", []))
+        for path in paths:
+            is_fav = path in favorites
+            set_favorite(self.tags, path, not is_fav)
         save_tags(self.tags)
         self._refresh_list()
-
-    def _on_build_order_mode_change(self) -> None:
-        self._reset_bo_steps_from(0)
-        self._refresh_build_order_options()
-        self._refresh_list()
+        self.status.set(f"Favorite toggled for {len(paths)} replay(s)")
 
     def _on_build_order_step_change(self, idx: int) -> None:
         self._reset_bo_steps_from(idx + 1)
@@ -740,8 +978,7 @@ class App:
 
     def _iter_sequences(self, item: Dict[str, Any]) -> List[List[str]]:
         sequences = item.get("bo_sequences", [])
-        mode = self.build_order_mode.get()
-        key = "seq_tech" if mode == "Tech" else "seq_general"
+        key = "seq_tech"
         race_filter = self.race_filter.get()
         result: List[List[str]] = []
         for entry in sequences:
@@ -826,6 +1063,202 @@ class App:
             return None
         return value
 
+    def _get_proxy_threshold_silent(self, default: float = 35.0) -> float:
+        try:
+            value = float(self.proxy_threshold.get().strip())
+        except (TypeError, ValueError):
+            return default
+        if value <= 0:
+            return default
+        return value
+
+    def _get_watch_interval_ms(self) -> int | None:
+        try:
+            seconds = float(self.watch_interval_seconds.get().strip())
+        except ValueError:
+            messagebox.showwarning("Invalid Watch", "Watch interval must be a number (seconds).")
+            return None
+        if seconds < 3:
+            messagebox.showwarning("Invalid Watch", "Watch interval must be >= 3 seconds.")
+            return None
+        return int(seconds * 1000)
+
+    def _get_watch_interval_ms_silent(self, default_ms: int = 15000) -> int:
+        try:
+            seconds = float(self.watch_interval_seconds.get().strip())
+        except (TypeError, ValueError):
+            return default_ms
+        if seconds < 3:
+            return default_ms
+        return int(seconds * 1000)
+
+    def _on_watch_toggle(self) -> None:
+        self._watch_enabled = bool(self.watch_enabled.get())
+        self.settings["watch_enabled"] = self._watch_enabled
+        save_settings(self.settings)
+        self.status.set("Auto watch enabled" if self._watch_enabled else "Auto watch disabled")
+
+    def _set_watch_settings(self) -> None:
+        interval_ms = self._get_watch_interval_ms()
+        if interval_ms is None:
+            return
+        self._watch_interval_ms = interval_ms
+        self._watch_enabled = bool(self.watch_enabled.get())
+        self.settings["watch_enabled"] = self._watch_enabled
+        self.settings["watch_interval_seconds"] = round(interval_ms / 1000, 2)
+        save_settings(self.settings)
+        self.status.set(f"Watch settings saved ({self.settings['watch_interval_seconds']}s)")
+
+    def _show_new_replays_window(self, replays: List[Dict[str, Any]], *, source_context: str = "startup") -> None:
+        sorted_replays = sorted(replays, key=lambda r: str(r.get("start_time", "")), reverse=True)
+        for replay in sorted_replays:
+            path = str(replay.get("path", ""))
+            if not path:
+                continue
+            self._new_replays_by_path[path] = replay
+
+        if not self._new_replays_window or not self._new_replays_window.winfo_exists():
+            top = tk.Toplevel(self.root)
+            self._new_replays_window = top
+            top.title("Nouvelles parties detectees")
+            top.geometry("1120x560")
+            top.minsize(900, 420)
+            top.transient(self.root)
+            top.grab_set()
+            top.protocol("WM_DELETE_WINDOW", self._close_new_replays_window)
+
+            header = ttk.Frame(top, padding=10)
+            header.pack(fill=tk.X)
+            ttk.Label(header, textvariable=self.new_replays_header).pack(side=tk.LEFT)
+
+            list_frame = ttk.Frame(top, padding=(10, 0, 10, 6))
+            list_frame.pack(fill=tk.BOTH, expand=True)
+            columns = ("date", "filename", "matchup", "map", "players")
+            tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=12)
+            self._new_replays_tree = tree
+            tree.heading("date", text="Date")
+            tree.heading("filename", text="Fichier")
+            tree.heading("matchup", text="Matchup")
+            tree.heading("map", text="Map")
+            tree.heading("players", text="Players")
+            tree.column("date", width=130, stretch=False)
+            tree.column("filename", width=260, stretch=False)
+            tree.column("matchup", width=80, stretch=False, anchor=tk.CENTER)
+            tree.column("map", width=180, stretch=False)
+            tree.column("players", width=430, stretch=True)
+
+            y_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=y_scroll.set)
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            y_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+            tree.bind("<<TreeviewSelect>>", self._reload_new_replay_editor_for_selection)
+
+            details_frame = ttk.Frame(top, padding=(10, 4, 10, 6))
+            details_frame.pack(fill=tk.X)
+            ttk.Label(details_frame, textvariable=self.new_replays_selected_info).pack(side=tk.LEFT)
+
+            editor_frame = ttk.Frame(top, padding=(10, 2, 10, 10))
+            editor_frame.pack(fill=tk.X)
+            ttk.Label(editor_frame, text="Tags (comma):").pack(side=tk.LEFT)
+            ttk.Entry(editor_frame, textvariable=self.new_replays_tags, width=48).pack(side=tk.LEFT, padx=6)
+            ttk.Checkbutton(editor_frame, text="Favorite", variable=self.new_replays_fav).pack(side=tk.LEFT, padx=10)
+
+            footer = ttk.Frame(top, padding=10)
+            footer.pack(fill=tk.X)
+            ttk.Button(footer, text="Apply", command=self._apply_selected_new_replay).pack(side=tk.RIGHT, padx=6)
+            ttk.Button(footer, text="Fermer", command=self._close_new_replays_window).pack(side=tk.RIGHT)
+
+        tree = self._new_replays_tree
+        if tree and tree.winfo_exists():
+            existing_paths = set()
+            for child in tree.get_children():
+                item = tree.item(child)
+                tags = item.get("tags") or []
+                if tags:
+                    existing_paths.add(str(tags[0]))
+            for replay in sorted_replays:
+                path = str(replay.get("path", ""))
+                if not path or path in existing_paths:
+                    continue
+                tree.insert(
+                    "",
+                    0,
+                    values=(
+                        format_date(replay.get("start_time", "")),
+                        replay.get("filename", ""),
+                        replay.get("matchup", ""),
+                        replay.get("map", ""),
+                        self._format_players(replay.get("players", [])),
+                    ),
+                    tags=(path,),
+                )
+
+            if not tree.selection():
+                children = tree.get_children()
+                if children:
+                    tree.selection_set(children[0])
+            self._reload_new_replay_editor_for_selection()
+
+        context_text = "au lancement" if source_context == "startup" else "en temps reel"
+        self.new_replays_header.set(
+            f"{len(self._new_replays_by_path)} nouvelle(s) partie(s) detectee(s) {context_text}."
+        )
+        if self._new_replays_window and self._new_replays_window.winfo_exists():
+            self._new_replays_window.lift()
+            self._new_replays_window.focus_force()
+
+    def _selected_new_replay_path(self) -> str | None:
+        tree = self._new_replays_tree
+        if not tree or not tree.winfo_exists():
+            return None
+        selection = tree.selection()
+        if not selection:
+            return None
+        item = tree.item(selection[0])
+        tags = item.get("tags") or []
+        return str(tags[0]) if tags else None
+
+    def _reload_new_replay_editor_for_selection(self, _event: Any | None = None) -> None:
+        path = self._selected_new_replay_path()
+        if not path:
+            self.new_replays_tags.set("")
+            self.new_replays_fav.set(False)
+            self.new_replays_selected_info.set("Selectionne une game pour editer tags/favorite.")
+            return
+        replay = self._new_replays_by_path.get(path, {})
+        winner = self._format_winner(replay.get("players", []))
+        self.new_replays_selected_info.set(
+            f"{replay.get('filename', '')} | Winner: {winner} | Map: {replay.get('map', '')}"
+        )
+        self.new_replays_tags.set(", ".join(self.tags.get("tags", {}).get(path, [])))
+        self.new_replays_fav.set(path in set(self.tags.get("favorites", [])))
+
+    def _apply_selected_new_replay(self) -> None:
+        path = self._selected_new_replay_path()
+        if not path:
+            messagebox.showinfo("No Selection", "Select a replay first.")
+            return
+        raw_tags = self.new_replays_tags.get().strip()
+        tag_list = [t.strip() for t in raw_tags.split(",")] if raw_tags else []
+        set_tags(self.tags, path, tag_list)
+        set_favorite(self.tags, path, bool(self.new_replays_fav.get()))
+        save_tags(self.tags)
+        self.tags = load_tags()
+        self._refresh_filters()
+        self._refresh_list()
+        self.status.set("Replay metadata updated")
+
+    def _close_new_replays_window(self) -> None:
+        if self._new_replays_window and self._new_replays_window.winfo_exists():
+            self._new_replays_window.destroy()
+        self._new_replays_window = None
+        self._new_replays_tree = None
+        self._new_replays_by_path = {}
+        self.new_replays_header.set("")
+        self.new_replays_selected_info.set("Selectionne une game pour editer tags/favorite.")
+        self.new_replays_tags.set("")
+        self.new_replays_fav.set(False)
+
     def _set_proxy_threshold(self) -> None:
         value = self._get_proxy_threshold()
         if value is None:
@@ -879,20 +1312,23 @@ class App:
         top = ttk.Frame(window, padding=10)
         top.pack(fill=tk.X)
 
-        ttk.Label(top, text="Player:").pack(side=tk.LEFT)
+        ttk.Label(top, text="Player 1:").pack(side=tk.LEFT)
         player_var = tk.StringVar(value="")
-        player_combo = ttk.Combobox(top, textvariable=player_var, state="readonly", width=30)
-        player_combo.pack(side=tk.LEFT, padx=6)
+        player_entry = ttk.Entry(top, textvariable=player_var, width=28)
+        player_entry.pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(top, text="Player 2:").pack(side=tk.LEFT)
+        player2_var = tk.StringVar(value="")
+        player2_entry = ttk.Entry(top, textvariable=player2_var, width=28)
+        player2_entry.pack(side=tk.LEFT, padx=6)
+
+        ttk.Button(top, text="Refresh", command=lambda: refresh_stats()).pack(side=tk.LEFT, padx=6)
 
         stats_text = tk.Text(window, height=20, wrap=tk.NONE)
         stats_text.pack(fill=tk.BOTH, expand=True, padx=10, pady=6)
         stats_text.configure(state=tk.DISABLED)
 
         players = sorted({p.get("name", "") for item in self.filtered_items for p in item.get("players", []) if p.get("name")})
-        if not players:
-            players = [""]
-        player_combo["values"] = players
-        player_var.set(players[0])
 
         def set_text(text: str) -> None:
             stats_text.configure(state=tk.NORMAL)
@@ -944,7 +1380,8 @@ class App:
             return "+".join(sorted(races))
 
         def compute_stats() -> str:
-            player_name = player_var.get()
+            player_name = player_var.get().strip()
+            player2_name = player2_var.get().strip()
             if not player_name:
                 return "No player selected."
 
@@ -956,13 +1393,17 @@ class App:
 
             by_matchup: Dict[str, Dict[str, int]] = {}
             by_opponent_race: Dict[str, Dict[str, int]] = {}
+            head_to_head_games = 0
+            head_to_head_wins = 0
 
             for item in self.filtered_items:
                 player_entry = None
+                player2_entry = None
                 for p in item.get("players", []):
                     if p.get("name") == player_name:
                         player_entry = p
-                        break
+                    if player2_name and p.get("name") == player2_name:
+                        player2_entry = p
                 if not player_entry:
                     continue
 
@@ -988,6 +1429,10 @@ class App:
                     proxy_games += 1
                     if won:
                         proxy_wins += 1
+                if player2_name and player2_entry:
+                    head_to_head_games += 1
+                    if won:
+                        head_to_head_wins += 1
 
             if total_games == 0:
                 return "No games found for selected player in current filters."
@@ -999,9 +1444,12 @@ class App:
                 f"Total Time: {format_total_seconds(total_seconds)}",
                 f"Proxy Against%: {round((proxy_games / total_games) * 100, 1)}",
                 f"Win% vs Proxy: {round((proxy_wins / proxy_games) * 100, 1) if proxy_games else 0.0}",
-                "",
-                "Win% by Opponent Race:",
             ]
+            if player2_name:
+                matchup_win_pct = round((head_to_head_wins / head_to_head_games) * 100, 1) if head_to_head_games else 0.0
+                lines.append(f"Matchup vs {player2_name}: {matchup_win_pct}% ({head_to_head_wins}/{head_to_head_games})")
+            lines.append("")
+            lines.append("Win% by Opponent Race:")
 
             for race_key in sorted(by_opponent_race.keys()):
                 data = by_opponent_race[race_key]
@@ -1020,7 +1468,102 @@ class App:
         def refresh_stats(_event: Any | None = None) -> None:
             set_text(compute_stats())
 
-        player_combo.bind("<<ComboboxSelected>>", refresh_stats)
+        def make_popup(entry: ttk.Entry) -> tuple[tk.Toplevel, tk.Listbox]:
+            popup = tk.Toplevel(window)
+            popup.withdraw()
+            popup.overrideredirect(True)
+            popup.attributes("-topmost", True)
+            listbox = tk.Listbox(popup, height=6, activestyle="dotbox")
+            listbox.pack(fill=tk.BOTH, expand=True)
+            return popup, listbox
+
+        popup1, listbox1 = make_popup(player_entry)
+        popup2, listbox2 = make_popup(player2_entry)
+
+        def show_popup(entry: ttk.Entry, popup: tk.Toplevel, listbox: tk.Listbox, values: list[str]) -> None:
+            listbox.delete(0, tk.END)
+            for value in values:
+                listbox.insert(tk.END, value)
+            if not values:
+                popup.withdraw()
+                return
+            x = entry.winfo_rootx()
+            y = entry.winfo_rooty() + entry.winfo_height()
+            popup.geometry(f"{entry.winfo_width()}x{min(150, 20 * len(values))}+{x}+{y}")
+            popup.deiconify()
+
+        def hide_popup(popup: tk.Toplevel) -> None:
+            popup.withdraw()
+
+        def filter_players(query: str) -> list[str]:
+            if not query:
+                return players
+            q = query.lower()
+            return [p for p in players if q in p.lower()]
+
+        def bind_entry(entry: ttk.Entry, popup: tk.Toplevel, listbox: tk.Listbox, var: tk.StringVar) -> None:
+            def on_key_release(event: Any) -> None:
+                if getattr(event, "keysym", "") in {"Up", "Down", "Return", "Escape"}:
+                    return
+                show_popup(entry, popup, listbox, filter_players(var.get().strip()))
+
+            def on_focus_out(_event: Any) -> None:
+                self.root.after(100, lambda: hide_popup(popup))
+
+            def on_select(_event: Any | None = None) -> None:
+                selection = listbox.curselection()
+                if not selection:
+                    return
+                value = listbox.get(selection[0])
+                var.set(value)
+                hide_popup(popup)
+                refresh_stats()
+                entry.focus_set()
+                entry.icursor(tk.END)
+
+            def move_selection(delta: int) -> None:
+                size = listbox.size()
+                if size == 0:
+                    return
+                selection = listbox.curselection()
+                if not selection:
+                    index = 0 if delta > 0 else size - 1
+                else:
+                    index = max(0, min(size - 1, selection[0] + delta))
+                listbox.selection_clear(0, tk.END)
+                listbox.selection_set(index)
+                listbox.activate(index)
+                listbox.see(index)
+
+            def on_down(_event: Any) -> str:
+                if not popup.winfo_viewable():
+                    show_popup(entry, popup, listbox, filter_players(var.get().strip()))
+                move_selection(1)
+                return "break"
+
+            def on_up(_event: Any) -> str:
+                if not popup.winfo_viewable():
+                    show_popup(entry, popup, listbox, filter_players(var.get().strip()))
+                move_selection(-1)
+                return "break"
+
+            def on_enter(_event: Any) -> str:
+                on_select()
+                return "break"
+
+            entry.bind("<KeyRelease>", on_key_release)
+            entry.bind("<FocusOut>", on_focus_out)
+            entry.bind("<Down>", on_down)
+            entry.bind("<Up>", on_up)
+            entry.bind("<Return>", on_enter)
+            listbox.bind("<<ListboxSelect>>", on_select)
+            listbox.bind("<ButtonRelease-1>", on_select)
+
+        bind_entry(player_entry, popup1, listbox1, player_var)
+        bind_entry(player2_entry, popup2, listbox2, player2_var)
+
+        player_entry.bind("<Return>", refresh_stats)
+        player2_entry.bind("<Return>", refresh_stats)
         refresh_stats()
 
     def _format_proxy_by_player(self, item: Dict[str, Any]) -> str:
@@ -1103,22 +1646,31 @@ class App:
         tag = self.edit_tag_select.get().strip()
         if not tag:
             return
-        current = self.tags_entry.get()
-        parts = [t.strip() for t in current.split(",") if t.strip()]
-        if tag not in parts:
-            parts.append(tag)
-        self.tags_entry.set(", ".join(parts))
+        self._append_tag_to_selected(tag)
 
     def _add_new_tag_to_selected(self) -> None:
         tag = self.new_tag_entry.get().strip()
         if not tag:
             return
-        current = self.tags_entry.get()
-        parts = [t.strip() for t in current.split(",") if t.strip()]
-        if tag not in parts:
-            parts.append(tag)
-        self.tags_entry.set(", ".join(parts))
+        self._append_tag_to_selected(tag)
         self.new_tag_entry.set("")
+
+    def _append_tag_to_selected(self, tag: str) -> None:
+        paths = self._get_selected_paths()
+        if not paths:
+            messagebox.showinfo("No Selection", "Select a replay first.")
+            return
+        for path in paths:
+            current_tags = list(self.tags.get("tags", {}).get(path, []))
+            if tag not in current_tags:
+                current_tags.append(tag)
+            set_tags(self.tags, path, current_tags)
+        save_tags(self.tags)
+        first_path = paths[0]
+        self.tags_entry.set(", ".join(self.tags.get("tags", {}).get(first_path, [])))
+        self._refresh_filters()
+        self._refresh_list()
+        self.status.set(f"Tag '{tag}' added to {len(paths)} replay(s)")
 
     def _open_in_folder(self) -> None:
         path = self._get_selected_path()
@@ -1138,68 +1690,6 @@ class App:
                 subprocess.run(["xdg-open", str(file_path.parent)], check=False)
         except Exception:
             messagebox.showwarning("Open Failed", "Could not open file explorer.")
-
-    def _export_csv(self) -> None:
-        if not hasattr(self, "filtered_items"):
-            self._refresh_list()
-        if not self.filtered_items:
-            messagebox.showinfo("No Data", "No replays to export with current filters.")
-            return
-        filename = filedialog.asksaveasfilename(
-            title="Export CSV",
-            defaultextension=".csv",
-            filetypes=[("CSV Files", "*.csv")],
-        )
-        if not filename:
-            return
-
-        favorites = set(self.tags.get("favorites", []))
-        build_orders = self.tags.get("build_orders", {})
-
-        with open(filename, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(
-                f,
-                fieldnames=[
-                    "filename",
-                    "path",
-                    "map",
-                    "winner",
-                    "matchup",
-                    "date",
-                    "length",
-                    "players",
-                    "favorite",
-                    "tags",
-                    "build_order_manual",
-                    "build_order_auto",
-                    "proxy_distance",
-                    "proxy_by_player",
-                    "proxy_flag",
-                ],
-            )
-            writer.writeheader()
-            for item in self.filtered_items:
-                manual_bo = build_orders.get(item.get("path", ""), "")
-                auto_bo = item.get("build_order_auto", "")
-                writer.writerow(
-                    {
-                        "filename": item.get("filename", ""),
-                        "path": item.get("path", ""),
-                        "map": item.get("map", ""),
-                        "winner": self._format_winner(item.get("players", [])),
-                        "matchup": item.get("matchup", ""),
-                        "date": format_date(item.get("start_time", "")),
-                        "length": format_length(item.get("length", "")),
-                        "players": self._format_players(item.get("players", [])),
-                        "favorite": item.get("path") in favorites,
-                        "tags": ", ".join(self.tags.get("tags", {}).get(item.get("path", ""), [])),
-                        "build_order_manual": manual_bo,
-                        "build_order_auto": auto_bo,
-                        "proxy_distance": self._format_proxy_distance(item.get("proxy_distance_max")),
-                        "proxy_by_player": self._format_proxy_by_player(item),
-                        "proxy_flag": bool(item.get("proxy_flag")),
-                    }
-                )
 
     def _export_full_csv(self) -> None:
         if not self.index.get("replays", []):

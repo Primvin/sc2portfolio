@@ -514,6 +514,78 @@ def scan_replays_multi(
     return index
 
 
+def scan_replays_delta(
+    folder: Path,
+    *,
+    use_cache: bool = True,
+    proxy_threshold: float = 35.0,
+    progress_cb: Optional[callable] = None,
+) -> Dict[str, Any]:
+    return scan_replays_multi_delta(
+        [folder],
+        use_cache=use_cache,
+        proxy_threshold=proxy_threshold,
+        progress_cb=progress_cb,
+    )
+
+
+def scan_replays_multi_delta(
+    folders: Iterable[Path],
+    *,
+    use_cache: bool = True,
+    proxy_threshold: float = 35.0,
+    progress_cb: Optional[callable] = None,
+) -> Dict[str, Any]:
+    _ensure_sc2reader()
+    from sc2reader import load_replay
+
+    folder_list = [Path(folder).resolve() for folder in folders if folder]
+    existing = load_index() if use_cache else {"replays": []}
+    by_path = {item["path"]: item for item in existing.get("replays", [])}
+
+    replay_files: List[Tuple[Path, Path]] = []
+    for folder in folder_list:
+        for replay_file in _iter_replay_files(folder):
+            replay_files.append((replay_file, folder))
+
+    candidates: List[Tuple[Path, Path]] = []
+    for replay_file, source_folder in replay_files:
+        resolved = str(replay_file.resolve())
+        if resolved not in by_path:
+            candidates.append((replay_file, source_folder))
+
+    updated: List[Dict[str, Any]] = list(existing.get("replays", []))
+    errors: List[str] = list(existing.get("errors", []))
+    total = len(candidates)
+    for idx, (replay_file, source_folder) in enumerate(candidates, start=1):
+        try:
+            replay = load_replay(str(replay_file), load_level=3)
+            updated.append(
+                _serialize_replay(
+                    replay,
+                    replay_file,
+                    proxy_threshold=proxy_threshold,
+                    source_folder=source_folder,
+                )
+            )
+            if progress_cb:
+                progress_cb(idx, total)
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{replay_file}: {exc}")
+            if progress_cb:
+                progress_cb(idx, total)
+
+    index = dict(existing)
+    index["replays"] = updated
+    index["errors"] = errors
+    index["folders"] = [str(folder) for folder in folder_list]
+    index["proxy_threshold"] = proxy_threshold
+    if len(folder_list) == 1:
+        index["folder"] = str(folder_list[0])
+    save_index(index)
+    return index
+
+
 def _ensure_sc2reader() -> None:
     try:
         mod = importlib.import_module("sc2reader")

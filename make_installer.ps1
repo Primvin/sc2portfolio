@@ -1,19 +1,25 @@
 $ErrorActionPreference = 'Stop'
 
-Write-Host "[1/4] Creating virtual environment..."
+Write-Host "[1/5] Creating virtual environment..."
 if (-Not (Test-Path .venv)) {
     python -m venv .venv
 }
 
-Write-Host "[2/4] Activating virtual environment and installing deps..."
-& .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-pip install pyinstaller
+$py = Join-Path (Get-Location) ".venv\Scripts\python.exe"
+if (-Not (Test-Path $py)) {
+    throw "Virtual environment python not found at $py"
+}
 
-Write-Host "[3/4] Building exe..."
-pyinstaller --noconfirm --clean --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader run_app.py
+Write-Host "[2/5] Upgrading pip..."
+& $py -m pip install --upgrade pip
 
-Write-Host "[4/4] Preparing Inno Setup script..."
+Write-Host "[3/5] Installing dependencies..."
+& $py -m pip install -r requirements.txt pyinstaller
+
+Write-Host "[4/5] Building exe..."
+& $py -m PyInstaller --noconfirm --clean --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader --hidden-import mpyq run_app.py
+
+Write-Host "[5/5] Preparing Inno Setup script..."
 $iss = @'
 [Setup]
 AppName=SC2ReplayAnalyzer
