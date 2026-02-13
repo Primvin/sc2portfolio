@@ -17,7 +17,7 @@ Write-Host "[3/5] Installing dependencies..."
 & $py -m pip install -r requirements.txt pyinstaller
 
 Write-Host "[4/5] Building debug exe (console enabled)..."
-& $py -m PyInstaller --noconfirm --clean --onefile -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader --hidden-import mpyq --debug all run_app.py
+& $py -m PyInstaller --noconfirm --clean --onefile -n SC2ReplayAnalyzer --icon sc2replaytool/ico/sc2ra.ico --collect-data sc2reader --hidden-import mpyq --debug all run_app.py
 
 Write-Host "[5/5] Launching exe for debug output..."
 & .\dist\SC2ReplayAnalyzer.exe

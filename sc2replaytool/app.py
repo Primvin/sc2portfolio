@@ -34,6 +34,14 @@ from .core.paths import get_data_dir
 SETTINGS_FILENAME = "settings.json"
 
 
+def _icon_path() -> Path:
+    # When frozen by PyInstaller, data files are extracted under _MEIPASS.
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        base = Path(getattr(sys, "_MEIPASS"))
+        return base / "sc2replaytool" / "ico" / "sc2ra.ico"
+    return Path(__file__).resolve().parent / "ico" / "sc2ra.ico"
+
+
 def settings_path() -> Path:
     return get_data_dir() / SETTINGS_FILENAME
 
@@ -113,6 +121,7 @@ class App:
         self.root.title("SC2 Replay Analyzer")
         self.root.geometry("1200x980")
         self.root.minsize(1100, 820)
+        self._apply_window_icon(self.root)
 
         self.index: Dict[str, Any] = load_index()
         self.tags: Dict[str, Any] = load_tags()
@@ -396,6 +405,14 @@ class App:
         ttk.Label(status_row, textvariable=self.status).pack(side=tk.LEFT)
         self.progress = ttk.Progressbar(status_row, orient=tk.HORIZONTAL, length=260, mode="determinate", variable=self.progress_var)
         self.progress.pack(side=tk.RIGHT)
+
+    def _apply_window_icon(self, window: tk.Toplevel | tk.Tk) -> None:
+        try:
+            icon = _icon_path()
+            if icon.exists():
+                window.iconbitmap(str(icon))
+        except Exception:
+            pass
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select Replay Folder")
@@ -1123,6 +1140,7 @@ class App:
             top.title("Nouvelles parties detectees")
             top.geometry("1120x560")
             top.minsize(900, 420)
+            self._apply_window_icon(top)
             top.transient(self.root)
             top.grab_set()
             top.protocol("WM_DELETE_WINDOW", self._close_new_replays_window)
@@ -1133,19 +1151,21 @@ class App:
 
             list_frame = ttk.Frame(top, padding=(10, 0, 10, 6))
             list_frame.pack(fill=tk.BOTH, expand=True)
-            columns = ("date", "filename", "matchup", "map", "players")
+            columns = ("date", "filename", "winner", "matchup", "map", "players")
             tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=12)
             self._new_replays_tree = tree
             tree.heading("date", text="Date")
             tree.heading("filename", text="Fichier")
+            tree.heading("winner", text="Winner")
             tree.heading("matchup", text="Matchup")
             tree.heading("map", text="Map")
             tree.heading("players", text="Players")
             tree.column("date", width=130, stretch=False)
-            tree.column("filename", width=260, stretch=False)
+            tree.column("filename", width=220, stretch=False)
+            tree.column("winner", width=160, stretch=False)
             tree.column("matchup", width=80, stretch=False, anchor=tk.CENTER)
             tree.column("map", width=180, stretch=False)
-            tree.column("players", width=430, stretch=True)
+            tree.column("players", width=360, stretch=True)
 
             y_scroll = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=tree.yview)
             tree.configure(yscrollcommand=y_scroll.set)
@@ -1186,6 +1206,7 @@ class App:
                     values=(
                         format_date(replay.get("start_time", "")),
                         replay.get("filename", ""),
+                        self._format_winner(replay.get("players", [])),
                         replay.get("matchup", ""),
                         replay.get("map", ""),
                         self._format_players(replay.get("players", [])),
@@ -1308,6 +1329,7 @@ class App:
         window.title("Stats")
         window.geometry("760x520")
         window.minsize(720, 480)
+        self._apply_window_icon(window)
 
         top = ttk.Frame(window, padding=10)
         top.pack(fill=tk.X)

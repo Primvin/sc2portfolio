@@ -17,7 +17,7 @@ Write-Host "[3/5] Installing dependencies..."
 & $py -m pip install -r requirements.txt pyinstaller
 
 Write-Host "[4/5] Building exe..."
-& $py -m PyInstaller --noconfirm --clean --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/SC2RA_multi_sizes.ico --collect-data sc2reader --hidden-import mpyq run_app.py
+& $py -m PyInstaller --noconfirm --clean --onefile --windowed -n SC2ReplayAnalyzer --icon sc2replaytool/ico/sc2ra.ico --collect-data sc2reader --hidden-import mpyq run_app.py
 
 Write-Host "[5/5] Preparing Inno Setup script..."
 $iss = @'
@@ -30,7 +30,7 @@ OutputDir=dist
 OutputBaseFilename=SC2ReplayAnalyzer-Setup
 Compression=lzma
 SolidCompression=yes
-SetupIconFile=sc2replaytool\\ico\\SC2RA_multi_sizes.ico
+SetupIconFile=sc2replaytool\\ico\\sc2ra.ico
 
 [Files]
 Source: "dist\\SC2ReplayAnalyzer.exe"; DestDir: "{app}"; Flags: ignoreversion
