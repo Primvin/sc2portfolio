@@ -121,6 +121,7 @@ class App:
         self.root.title("SC2 Replay Analyzer")
         self.root.geometry("1200x980")
         self.root.minsize(1100, 820)
+        self.root.configure(bg="#f3f5f7")
         self._apply_window_icon(self.root)
 
         self.index: Dict[str, Any] = load_index()
@@ -181,6 +182,7 @@ class App:
         self._folder_display_to_path: Dict[str, str] = {}
         self._folder_path_to_display: Dict[str, str] = {}
 
+        self._setup_styles()
         self._build_ui()
         self._sync_folder_controls()
         self._sort_state["date"] = True
@@ -191,8 +193,17 @@ class App:
         self.root.after(5000, self._watch_loop)
 
     def _build_ui(self) -> None:
-        frame = ttk.Frame(self.root, padding=10)
+        frame = ttk.Frame(self.root, padding=12, style="App.TFrame")
         frame.pack(fill=tk.BOTH, expand=True)
+
+        header = ttk.Frame(frame, style="Header.TFrame")
+        header.pack(fill=tk.X, pady=(0, 6))
+        ttk.Label(header, text="SC2 Replay Analyzer", style="HeaderTitle.TLabel").pack(side=tk.LEFT)
+        ttk.Label(
+            header,
+            text="Replay management, build-order analysis, tags and stats",
+            style="HeaderSub.TLabel",
+        ).pack(side=tk.LEFT, padx=12)
 
         tabs = ttk.Notebook(frame)
         tabs.pack(fill=tk.X, pady=(0, 6))
@@ -213,21 +224,17 @@ class App:
         self.replay_folder_combo.bind("<<ComboboxSelected>>", self._on_replay_folder_selected)
         ttk.Label(folder_row, text="Name:").pack(side=tk.LEFT, padx=(6, 0))
         ttk.Entry(folder_row, textvariable=self.folder_label_entry, width=24).pack(side=tk.LEFT, padx=6)
-        ttk.Button(folder_row, text="Add Folder", command=self._browse_folder).pack(side=tk.LEFT)
+        ttk.Button(folder_row, text="Add Folder", command=self._browse_folder, style="Accent.TButton").pack(side=tk.LEFT)
         ttk.Button(folder_row, text="Save Name", command=self._save_folder_name).pack(side=tk.LEFT, padx=4)
         ttk.Button(folder_row, text="Remove", command=self._remove_folder).pack(side=tk.LEFT, padx=6)
-        ttk.Button(folder_row, text="Scan Selected", command=self._start_scan).pack(side=tk.LEFT)
-        ttk.Button(folder_row, text="Scan All", command=self._start_scan_all).pack(side=tk.LEFT, padx=6)
+        ttk.Button(folder_row, text="Scan Selected", command=self._start_scan, style="Accent.TButton").pack(side=tk.LEFT)
+        ttk.Button(folder_row, text="Scan All", command=self._start_scan_all, style="Accent.TButton").pack(side=tk.LEFT, padx=6)
         ttk.Label(folder_row, textvariable=self.scan_hint).pack(side=tk.LEFT, padx=6)
-        tk.Button(
+        ttk.Button(
             folder_row,
             text="Supprimer l'historique",
             command=self._clear_history,
-            bg="#c0392b",
-            fg="white",
-            activebackground="#a93226",
-            activeforeground="white",
-            relief=tk.FLAT,
+            style="Danger.TButton",
         ).pack(side=tk.RIGHT)
 
         action_row = ttk.Frame(folder_tab)
@@ -258,7 +265,7 @@ class App:
 
         ttk.Label(filter_row, text="Race:").pack(side=tk.LEFT)
         self.race_combo = ttk.Combobox(filter_row, textvariable=self.race_filter, state="readonly", width=6)
-        self.race_combo["values"] = ["All", "T", "P", "Z", "R"]
+        self.race_combo["values"] = ["All", "T", "P", "Z"]
         self.race_combo.pack(side=tk.LEFT, padx=6)
         self.race_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_filters())
 
@@ -268,7 +275,6 @@ class App:
         self.player_count_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
 
         ttk.Checkbutton(filter_row, text="Favorites only", variable=self.favorite_only, command=self._refresh_list).pack(side=tk.LEFT, padx=6)
-        ttk.Checkbutton(filter_row, text="Proxy only", variable=self.proxy_only, command=self._refresh_list).pack(side=tk.LEFT, padx=6)
         ttk.Label(filter_row, text="Tag:").pack(side=tk.LEFT, padx=6)
         self.tag_combo = ttk.Combobox(filter_row, textvariable=self.tag_filter, state="normal", width=14)
         self.tag_combo.pack(side=tk.LEFT, padx=6)
@@ -307,27 +313,25 @@ class App:
         map_entry = ttk.Entry(search_row, textvariable=self.map_filter, width=24)
         map_entry.pack(side=tk.LEFT, padx=6)
         map_entry.bind("<KeyRelease>", lambda _e: self._refresh_list())
-        ttk.Button(search_row, text="Stats", command=self._open_stats_window).pack(side=tk.LEFT, padx=6)
-
-        search_tools_row = ttk.Frame(search_tab)
-        search_tools_row.pack(fill=tk.X, pady=4)
-        ttk.Label(search_tools_row, text="Proxy Threshold:").pack(side=tk.LEFT, padx=6)
-        ttk.Entry(search_tools_row, textvariable=self.proxy_threshold, width=6).pack(side=tk.LEFT)
-        ttk.Button(search_tools_row, text="Set Threshold", command=self._set_proxy_threshold).pack(side=tk.LEFT, padx=6)
-
-        tag_search_row = ttk.Frame(search_tab)
-        tag_search_row.pack(fill=tk.X, pady=4)
-        ttk.Label(tag_search_row, text="Tag Search:").pack(side=tk.LEFT, padx=6)
-        self.tag_search_combo = ttk.Combobox(tag_search_row, textvariable=self.tags_search, state="normal", width=24)
+        ttk.Label(search_row, text="Tag Search:").pack(side=tk.LEFT, padx=(12, 6))
+        self.tag_search_combo = ttk.Combobox(search_row, textvariable=self.tags_search, state="normal", width=24)
         self.tag_search_combo.pack(side=tk.LEFT, padx=6)
         self.tag_search_combo.configure(postcommand=self._refresh_tag_combo_values)
         self.tag_search_combo.bind("<KeyRelease>", lambda _e: self._on_tag_search_change())
         self.tag_search_combo.bind("<<ComboboxSelected>>", lambda _e: self._refresh_list())
+        ttk.Button(search_row, text="Stats", command=self._open_stats_window).pack(side=tk.LEFT, padx=6)
+
+        search_tools_row = ttk.Frame(search_tab)
+        search_tools_row.pack(fill=tk.X, pady=4)
+        ttk.Checkbutton(search_tools_row, text="Proxy only", variable=self.proxy_only, command=self._refresh_list).pack(side=tk.LEFT, padx=6)
+        ttk.Label(search_tools_row, text="Proxy Threshold:").pack(side=tk.LEFT, padx=6)
+        ttk.Entry(search_tools_row, textvariable=self.proxy_threshold, width=6).pack(side=tk.LEFT)
+        ttk.Button(search_tools_row, text="Set Threshold", command=self._set_proxy_threshold).pack(side=tk.LEFT, padx=6)
 
         columns = ("fav", "filename", "players", "winner", "matchup", "map", "date", "length", "tags", "build_order", "proxy_dist")
         tree_frame = ttk.Frame(frame)
         tree_frame.pack(fill=tk.BOTH, expand=True, pady=6)
-        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=18, selectmode="extended")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=12, selectmode="extended")
         self._sort_state = {}
         self.tree.heading("fav", text="Fav", command=lambda: self._sort_by("fav"))
         self.tree.heading("filename", text="Filename", command=lambda: self._sort_by("filename"))
@@ -369,7 +373,19 @@ class App:
 
         details_box = ttk.Frame(frame)
         details_box.pack(fill=tk.BOTH, expand=False)
-        self.details_text = tk.Text(details_box, height=8, wrap=tk.NONE)
+        self.details_text = tk.Text(
+            details_box,
+            height=5,
+            wrap=tk.NONE,
+            bg="#ffffff",
+            fg="#1f2933",
+            relief=tk.FLAT,
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#d5dde6",
+            padx=8,
+            pady=8,
+        )
         details_y = ttk.Scrollbar(details_box, orient=tk.VERTICAL, command=self.details_text.yview)
         details_x = ttk.Scrollbar(details_box, orient=tk.HORIZONTAL, command=self.details_text.xview)
         self.details_text.configure(yscrollcommand=details_y.set, xscrollcommand=details_x.set, state=tk.DISABLED)
@@ -379,22 +395,26 @@ class App:
         details_box.rowconfigure(0, weight=1)
         details_box.columnconfigure(0, weight=1)
 
-        details_tags_row = ttk.Frame(frame)
-        details_tags_row.pack(fill=tk.X, pady=4)
-        ttk.Button(details_tags_row, text="Toggle Favorite", command=self._toggle_favorite).pack(side=tk.LEFT, padx=6)
-        ttk.Label(details_tags_row, text="New Tag:").pack(side=tk.LEFT)
-        ttk.Entry(details_tags_row, textvariable=self.new_tag_entry, width=16).pack(side=tk.LEFT, padx=6)
-        ttk.Button(details_tags_row, text="Add To Selected", command=self._add_new_tag_to_selected).pack(side=tk.LEFT, padx=6)
-        ttk.Separator(details_tags_row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
-        ttk.Label(details_tags_row, text="Add Existing:").pack(side=tk.LEFT, padx=6)
-        self.edit_tag_combo = ttk.Combobox(details_tags_row, textvariable=self.edit_tag_select, state="readonly", width=18)
+        tags_section = ttk.LabelFrame(frame, text="Tags & Favorites", padding=8)
+        tags_section.pack(fill=tk.X, pady=4)
+        tags_row_top = ttk.Frame(tags_section)
+        tags_row_top.pack(fill=tk.X, pady=(0, 4))
+        ttk.Button(tags_row_top, text="Toggle Favorite", command=self._toggle_favorite).pack(side=tk.LEFT, padx=6)
+        ttk.Label(tags_row_top, text="New Tag:").pack(side=tk.LEFT)
+        ttk.Entry(tags_row_top, textvariable=self.new_tag_entry, width=18).pack(side=tk.LEFT, padx=6)
+        ttk.Button(tags_row_top, text="Add To Selected", command=self._add_new_tag_to_selected).pack(side=tk.LEFT, padx=6)
+        ttk.Separator(tags_row_top, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
+        ttk.Label(tags_row_top, text="Add Existing:").pack(side=tk.LEFT, padx=6)
+        self.edit_tag_combo = ttk.Combobox(tags_row_top, textvariable=self.edit_tag_select, state="readonly", width=22)
         self.edit_tag_combo.pack(side=tk.LEFT, padx=6)
         self.edit_tag_combo.configure(postcommand=self._refresh_tag_combo_values)
-        ttk.Button(details_tags_row, text="Add Tag", command=self._add_existing_tag_to_selected).pack(side=tk.LEFT, padx=6)
-        ttk.Separator(details_tags_row, orient=tk.VERTICAL).pack(side=tk.LEFT, fill=tk.Y, padx=10)
-        ttk.Label(details_tags_row, text="Edit Tags (comma):").pack(side=tk.LEFT)
-        ttk.Entry(details_tags_row, textvariable=self.tags_entry, width=32).pack(side=tk.LEFT, padx=6)
-        ttk.Button(details_tags_row, text="Update Tags", command=self._set_selected_tags).pack(side=tk.LEFT)
+        ttk.Button(tags_row_top, text="Add Tag", command=self._add_existing_tag_to_selected).pack(side=tk.LEFT, padx=6)
+
+        tags_row_bottom = ttk.Frame(tags_section)
+        tags_row_bottom.pack(fill=tk.X)
+        ttk.Label(tags_row_bottom, text="Edit Tags (comma):").pack(side=tk.LEFT, padx=6)
+        ttk.Entry(tags_row_bottom, textvariable=self.tags_entry, width=56).pack(side=tk.LEFT, padx=6)
+        ttk.Button(tags_row_bottom, text="Update Tags", command=self._set_selected_tags).pack(side=tk.LEFT, padx=6)
 
         open_row = ttk.Frame(frame)
         open_row.pack(fill=tk.X, pady=4)
@@ -413,6 +433,63 @@ class App:
                 window.iconbitmap(str(icon))
         except Exception:
             pass
+
+    def _setup_styles(self) -> None:
+        style = ttk.Style(self.root)
+        try:
+            style.theme_use("clam")
+        except Exception:
+            pass
+
+        bg = "#eef3f8"
+        card = "#f8fbff"
+        text = "#0f172a"
+        subtext = "#425466"
+        border = "#c9d5e3"
+        accent = "#0ea5e9"
+        accent_active = "#0284c7"
+        danger = "#b42318"
+
+        style.configure("App.TFrame", background=bg)
+        style.configure("Header.TFrame", background=bg)
+        style.configure("HeaderTitle.TLabel", background=bg, foreground=text, font=("Segoe UI", 17, "bold"))
+        style.configure("HeaderSub.TLabel", background=bg, foreground=subtext, font=("Segoe UI", 10))
+
+        style.configure("TFrame", background=card)
+        style.configure("TLabel", background=card, foreground=text, font=("Segoe UI", 10))
+        style.configure("TNotebook", background=bg, borderwidth=0)
+        style.configure("TNotebook.Tab", padding=(16, 8), font=("Segoe UI", 10), width=15)
+        style.map(
+            "TNotebook.Tab",
+            background=[("selected", card), ("active", "#e8eef5"), ("!selected", "#e9edf2")],
+            foreground=[("selected", text), ("!selected", text)],
+            expand=[("selected", [0, 0, 0, 0]), ("!selected", [0, 0, 0, 0])],
+            padding=[("selected", [16, 8]), ("!selected", [16, 8])],
+        )
+
+        style.configure("TButton", padding=(8, 4), font=("Segoe UI", 9))
+        style.configure("Accent.TButton", background=accent, foreground="white", borderwidth=0)
+        style.map("Accent.TButton", background=[("active", accent_active)], foreground=[("active", "white")])
+        style.configure("Danger.TButton", background=danger, foreground="white", borderwidth=0)
+        style.map("Danger.TButton", background=[("active", "#912018")], foreground=[("active", "white")])
+
+        style.configure("TEntry", fieldbackground="white", bordercolor=border, lightcolor=border, darkcolor=border, padding=4)
+        style.configure("TCombobox", fieldbackground="white", background="white", bordercolor=border, lightcolor=border, darkcolor=border)
+        style.configure("TCheckbutton", background=card, foreground=text, font=("Segoe UI", 10))
+
+        style.configure(
+            "Treeview",
+            background="#ffffff",
+            fieldbackground="#d7deea",
+            foreground=text,
+            rowheight=27,
+            bordercolor=border,
+            padding=(0, 0, 0, 1),
+        )
+        style.configure("Treeview.Heading", background="#1f2937", foreground="#e6edf7", font=("Segoe UI", 10, "bold"))
+        style.map("Treeview", background=[("selected", "#123050")], foreground=[("selected", "#eaf2ff")])
+
+        style.configure("Horizontal.TProgressbar", troughcolor="#e6edf5", background=accent, bordercolor="#e6edf5", lightcolor=accent, darkcolor=accent)
 
     def _browse_folder(self) -> None:
         folder = filedialog.askdirectory(title="Select Replay Folder")
@@ -664,7 +741,7 @@ class App:
         self.matchup_combo["values"] = matchups
         if self.matchup_filter.get() not in matchups:
             self.matchup_filter.set("All")
-        if self.race_filter.get() not in {"All", "T", "P", "Z", "R"}:
+        if self.race_filter.get() not in {"All", "T", "P", "Z"}:
             self.race_filter.set("All")
         counts = ["All", "1", "2", "4", "6", "8"]
         self.player_count_combo["values"] = counts
