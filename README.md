@@ -106,6 +106,7 @@ If you want a classic Windows installer (`...-Setup.exe`), install Inno Setup an
 - Replay folder names can be customized in the UI (`Name` + `Save Name`); empty name falls back to full path.
 - Auto Watch is configurable and disabled by default on first launch.
 - Startup check is delta-oriented (focus on newly discovered replays).
+- coucou
 
 ## Troubleshooting
 ### `mpyq` missing
